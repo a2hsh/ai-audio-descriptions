@@ -332,21 +332,29 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
         const durationInSeconds = duration / 1000;
         const wordCount = Math.floor(durationInSeconds * wordCountPerSecond);
 
-        // Improved minimum word count logic
+        // --- Enhanced Arabic logic ---
         let minWords = 3;
-        const maxWords = 50; // Cap very long segments
-        // For Arabic, always use minWords = 8
+        let maxWords = 50;
+        let wordCountTolerance = 2;
         if (languageCode === 'ar-SA' || languageCode === 'ar-EG') {
-            minWords = 8;
+            // For Arabic, use higher min/max and looser tolerance
+            minWords = 12;
+            maxWords = durationInSeconds > 7 ? 35 : 20;
+            wordCountTolerance = 4;
         }
-        // CRITICAL: First 2-3 descriptions need to be clear and context-setting
+        // First 3 intervals: always context-setting, so boost minWords
         if (i < 3) {
-            minWords = Math.max(minWords, 10);
+            minWords = Math.max(minWords, 14);
+            maxWords = Math.max(maxWords, 25);
         }
         // If the original segment had <2 transcript phrases, boost minWords for more detail
         const orig = allSegmentsInTheVideo.find(s => msToTime(s.startTime) === segment.startTime && msToTime(s.endTime) === segment.endTime);
         if (orig && orig.transcriptPhraseCount !== undefined && orig.transcriptPhraseCount < 2) {
-            minWords = Math.max(minWords, 10);
+            minWords = Math.max(minWords, 14);
+        }
+        // If the original description is long, allow longer rewrites
+        if (segment.description && segment.description.split(/\s+/).length > maxWords) {
+            maxWords = Math.min(segment.description.split(/\s+/).length + 5, 45);
         }
         const adjustedWordCount = Math.max(minWords, Math.min(maxWords, wordCount));
 
@@ -357,9 +365,9 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
 
         // --- Compose modular prompt ---
         const globalSystem = (GLOBAL_SYSTEM_PROMPT[languageCode] || GLOBAL_SYSTEM_PROMPT["en-US"]) +
-            "\n\n[SCENE CONTINUITY]: Ensure the description flows naturally from the previous context. Avoid repeating details already mentioned in the last 2-3 segments. Focus on what is new, changed, or important for the listener to follow the scene. Use transitions or linking phrases if appropriate.";
+            "\n\n[SCENE CONTINUITY]: Ensure the description flows naturally from the previous context. Avoid repeating static details (lighting, architecture, etc.) or details already mentioned in the last 3 segments. Focus on what is new, changed, or important for the listener to follow the scene. Use linking phrases or transitions for better flow. If the interval is long, summarize the scene's progression.";
         const segmentContract = SEGMENT_CONTRACT.replace("{{maxWords}}", adjustedWordCount.toString());
-        // Pass the last 3 previous descriptions for context
+        // Pass the last 3 previous descriptions for context, plus interval index and times
         const prevContextArr = previousDescriptions.slice(-3);
         const payload = {
             title,
@@ -368,6 +376,9 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
             narrationStyle,
             maxWords: adjustedWordCount,
             previousDescriptions: prevContextArr,
+            intervalIndex: i + 1,
+            intervalStart: segment.startTime,
+            intervalEnd: segment.endTime,
             originalDescription: segment.description,
             nextDescription
         };
@@ -410,8 +421,8 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
                 actualWordCount = rewriteResult.trim().split(/\s+/).length;
                 responseObj = null;
             }
-            // Accept if wordCount matches maxWords exactly or within ±2
-            if (Math.abs(actualWordCount - adjustedWordCount) <= 2) break;
+            // Accept if wordCount matches maxWords exactly or within tolerance
+            if (Math.abs(actualWordCount - adjustedWordCount) <= wordCountTolerance) break;
             retry++;
         }
 
@@ -421,8 +432,8 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
             `  [REWRITTEN] (target: ${adjustedWordCount}, actual: ${actualWordCount} words, retries: ${retry})\n` +
             `    ${JSON.stringify(rewriteResult).substring(0, 300)}\n` +
             `    Previous context: ${JSON.stringify(prevContextArr.join(' | ')).substring(0, 200)}\n` +
-            (actualWordCount > adjustedWordCount + 2 ? `    [WARN] Description is too long!\n` : '') +
-            (actualWordCount < adjustedWordCount - 2 ? `    [WARN] Description is too short!\n` : '') +
+            (actualWordCount > adjustedWordCount + wordCountTolerance ? `    [WARN] Description is too long!\n` : '') +
+            (actualWordCount < adjustedWordCount - wordCountTolerance ? `    [WARN] Description is too short!\n` : '') +
             (retry > 0 ? `    [INFO] Retried ${retry} time(s) for word count enforcement.\n` : '') +
             `---`
         );
