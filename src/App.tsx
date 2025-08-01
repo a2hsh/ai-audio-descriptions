@@ -16,6 +16,12 @@ function App() {
     const [descriptionAvailable, setDescriptionAvailable] = React.useState(false);
     const [title, setTitle] = React.useState("");
     const [audioObjects, setAudioObjects] = React.useState<HTMLAudioElement[]>([]);
+    const [originalVideoVolume, setOriginalVideoVolume] = React.useState(1.0);
+    const [audioDescriptionVolume, setAudioDescriptionVolume] = React.useState(0.8);
+    const [selectedLanguage, setSelectedLanguage] = React.useState('en-US');
+    const [fadeInDuration, setFadeInDuration] = React.useState(0.5); // 0.5 seconds fade-in
+    const [fadeOutDuration, setFadeOutDuration] = React.useState(0.5); // 0.5 seconds fade-out
+    const [duckingEnabled, setDuckingEnabled] = React.useState(true); // Enable ducking by default
 
     const loadAllDescribedVideos = async () => {
         let allVideos: SavedVideoResult[] = [];
@@ -62,6 +68,18 @@ function App() {
                         audioObjects={audioObjects}
                         setAudioObjects={setAudioObjects}
                         onVideoDeleted={onVideoDeleted}
+                        originalVideoVolume={originalVideoVolume}
+                        setOriginalVideoVolume={setOriginalVideoVolume}
+                        audioDescriptionVolume={audioDescriptionVolume}
+                        setAudioDescriptionVolume={setAudioDescriptionVolume}
+                        selectedLanguage={selectedLanguage}
+                        setSelectedLanguage={setSelectedLanguage}
+                        fadeInDuration={fadeInDuration}
+                        setFadeInDuration={setFadeInDuration}
+                        fadeOutDuration={fadeOutDuration}
+                        setFadeOutDuration={setFadeOutDuration}
+                        duckingEnabled={duckingEnabled}
+                        setDuckingEnabled={setDuckingEnabled}
                     />
                 </div>
                 <div className='half'>
@@ -72,7 +90,12 @@ function App() {
                         setDescriptionAvailable={setDescriptionAvailable}
                         title={title}
                         setAudioObjects={setAudioObjects}
+                        audioDescriptionVolume={audioDescriptionVolume}
+                        selectedLanguage={selectedLanguage}
                     />
+                    <div style={{ marginTop: '10px', fontSize: '12px', color: '#666' }}>
+                        Current Language: {selectedLanguage}
+                    </div>
                 </div>
 
             </div>

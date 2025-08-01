@@ -27,6 +27,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = (props: VideoPlayerProps)
     const [analyzerId, setAnalyzerId] = React.useState<string>("");
     const [metadata, setMetadata] = React.useState("");
     const [narrationStyle, setNarrationStyle] = React.useState("");
+    const [reprocessMetadata, setReprocessMetadata] = React.useState("");
+    const [reprocessNarrationStyle, setReprocessNarrationStyle] = React.useState("");
+    const [reprocessLanguage, setReprocessLanguage] = React.useState("");
     const [videoUrl, setVideoUrl] = React.useState("");
     const [isPreparingForDownload, setIsPreparingForDownload] = React.useState(false);
     const [selectedVideo, setSelectedVideo] = React.useState<SavedVideoResult>();
@@ -80,6 +83,87 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = (props: VideoPlayerProps)
 
     const handleOnReady = () => {
         setVideoPlayerReady(true);
+        // Apply initial video volume when player is ready
+        if (playerRef.current) {
+            const internalPlayer = playerRef.current.getInternalPlayer();
+            if (internalPlayer && typeof internalPlayer.volume !== 'undefined') {
+                internalPlayer.volume = props.originalVideoVolume;
+            }
+        }
+    }
+
+    const handleVideoVolumeChange = (newVolume: number) => {
+        props.setOriginalVideoVolume(newVolume);
+        if (playerRef.current) {
+            const internalPlayer = playerRef.current.getInternalPlayer();
+            if (internalPlayer && typeof internalPlayer.volume !== 'undefined') {
+                internalPlayer.volume = newVolume;
+            }
+        }
+    }
+
+    const handleAudioDescriptionVolumeChange = (newVolume: number) => {
+        props.setAudioDescriptionVolume(newVolume);
+        // Update volume for all audio objects
+        props.audioObjects.forEach(audio => {
+            audio.volume = newVolume;
+        });
+        // Update current playing audio if any
+        if (currentAudio) {
+            currentAudio.volume = newVolume;
+        }
+    }
+
+    const fadeAudio = (audioElement: HTMLAudioElement, fromVolume: number, toVolume: number, duration: number) => {
+        const steps = 50; // Number of fade steps
+        const stepDuration = duration * 1000 / steps; // Duration per step in ms
+        const volumeStep = (toVolume - fromVolume) / steps;
+        let currentStep = 0;
+
+        const fadeInterval = setInterval(() => {
+            currentStep++;
+            const newVolume = fromVolume + (volumeStep * currentStep);
+            audioElement.volume = Math.max(0, Math.min(1, newVolume));
+
+            if (currentStep >= steps) {
+                clearInterval(fadeInterval);
+                audioElement.volume = toVolume;
+            }
+        }, stepDuration);
+
+        return fadeInterval;
+    }
+
+    const fadeVideoVolume = (fromVolume: number, toVolume: number, duration: number) => {
+        const steps = 50;
+        const stepDuration = duration * 1000 / steps;
+        const volumeStep = (toVolume - fromVolume) / steps;
+        let currentStep = 0;
+
+        const fadeInterval = setInterval(() => {
+            currentStep++;
+            const newVolume = fromVolume + (volumeStep * currentStep);
+            
+            // Apply to ReactPlayer's internal video element
+            if (playerRef.current) {
+                const internalPlayer = playerRef.current.getInternalPlayer();
+                if (internalPlayer && typeof internalPlayer.volume !== 'undefined') {
+                    internalPlayer.volume = Math.max(0, Math.min(1, newVolume));
+                }
+            }
+
+            if (currentStep >= steps) {
+                clearInterval(fadeInterval);
+                if (playerRef.current) {
+                    const internalPlayer = playerRef.current.getInternalPlayer();
+                    if (internalPlayer && typeof internalPlayer.volume !== 'undefined') {
+                        internalPlayer.volume = toVolume;
+                    }
+                }
+            }
+        }, stepDuration);
+
+        return fadeInterval;
     }
 
     const loadVideoFromList = async (selectedVideo: SavedVideoResult) => {
@@ -91,24 +175,51 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = (props: VideoPlayerProps)
         props.setTitle(title);
         setVideoUrl(selectedVideo.videoUrl);
         setSelectedVideo(selectedVideo);
+        
+        // Always try to load video details for potential reprocessing
+        if (selectedVideo.detailsJsonUrl !== '') {
+            try {
+                const videoDetails: VideoDetails = (await axios.get(selectedVideo.detailsJsonUrl)).data;
+                console.log("Loaded video details:", videoDetails);
+                setTaskId(videoDetails.taskId);
+                setAnalyzerId(videoDetails.analyzerId);
+                setMetadata(videoDetails.metadata);
+                setNarrationStyle(videoDetails.narrationStyle);
+                // Set the language from the saved video details, or default to current selection
+                if (videoDetails.selectedLanguage) {
+                    console.log("Setting language from video details:", videoDetails.selectedLanguage);
+                    props.setSelectedLanguage(videoDetails.selectedLanguage);
+                }
+            } catch (error) {
+                console.warn("Could not load video details:", error);
+            }
+        }
+        
         if (selectedVideo.audioDescriptionJsonUrl !== '') {
             setVideoUrl(selectedVideo.videoUrl);
             const jsonResult = await axios.get(selectedVideo.audioDescriptionJsonUrl);
             const audioDescriptions: any = jsonResult.data;
             props.setScenes(audioDescriptions);
             props.setDescriptionAvailable(true);
-            await loadAudioFilesIntoMemory(title, audioDescriptions, props.setAudioObjects);
+            await loadAudioFilesIntoMemory(title, audioDescriptions, props.setAudioObjects, props.audioDescriptionVolume);
         }
         else {
-            const videoDetails: VideoDetails = (await axios.get(selectedVideo.detailsJsonUrl)).data;
-            setTaskId(videoDetails.taskId);
-            setAnalyzerId(videoDetails.analyzerId);
-            setVideoUrl(videoDetails.videoUrl);
-            setMetadata(videoDetails.metadata);
-            setNarrationStyle(videoDetails.narrationStyle);
+            // No existing descriptions, trigger processing
             setOpenUploadDialog(false);
             setVideoUploaded(false);
             setOpenProcessVideoDialog(true);
+        }
+    }
+
+    const handleReprocess = () => {
+        if (selectedVideo && taskId && analyzerId) {
+            setReprocessMetadata(metadata);
+            setReprocessNarrationStyle(narrationStyle);
+            setReprocessLanguage(props.selectedLanguage);
+            setVideoUploaded(false); // Don't auto-continue, ask user for confirmation
+            setOpenProcessVideoDialog(true);
+        } else {
+            alert("Cannot reprocess: Missing video details. The video may need to be re-uploaded.");
         }
     }
 
@@ -132,13 +243,41 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = (props: VideoPlayerProps)
         await Promise.all(ffmpegWriteAudioPromises);
 
         let filterComplexPart1 = "";
-        let filterComplexPart2 = "[0]";
+        let filterComplexPart2 = "";
+        
+        // Create audio description tracks with proper timing
         props.scenes.forEach((scene, i) => {
             const delayMs = timeToSeconds(scene.startTime) * 1000;
-            filterComplexPart1 += `[${i + 1}]adelay=${delayMs}|${delayMs}[a${i}];`;
+            filterComplexPart1 += `[${i + 1}]volume=${props.audioDescriptionVolume},adelay=${delayMs}|${delayMs}[a${i}];`;
+        });
+        
+        // Apply ducking - keep it simple and reliable
+        if (props.duckingEnabled && props.scenes.length > 0) {
+            // Just use a simple constant duck level during description periods
+            // This is the approach that actually works reliably in FFmpeg
+            filterComplexPart1 += `[0:a]volume=${props.originalVideoVolume}`;
+            
+            // Apply simple volume reduction for each scene
+            props.scenes.forEach(scene => {
+                const startTime = timeToSeconds(scene.startTime);
+                const endTime = timeToSeconds(scene.endTime);
+                filterComplexPart1 += `,volume=enable='between(t,${startTime},${endTime})':volume=${props.originalVideoVolume * 0.2}`;
+            });
+            
+            filterComplexPart1 += "[ducked_audio];";
+            filterComplexPart2 = "[ducked_audio]";
+        } else {
+            // No ducking - simple volume control
+            filterComplexPart1 += `[0:a]volume=${props.originalVideoVolume}[original_audio];`;
+            filterComplexPart2 = "[original_audio]";
+        }
+        
+        // Mix with audio descriptions using proper volume normalization
+        props.scenes.forEach((_, i) => {
             filterComplexPart2 += `[a${i}]`;
         });
-        filterComplexPart2 += `amix=${props.scenes.length + 1}`;
+        // Use amix without weights to prevent volume reduction
+        filterComplexPart2 += `amix=inputs=${props.scenes.length + 1}:normalize=0`;
 
         ffmpegParams.push("-filter_complex", filterComplexPart1 + filterComplexPart2);
         ffmpegParams.push("-c:v", "copy", `output.mp4`);
@@ -163,6 +302,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = (props: VideoPlayerProps)
 
     const readDescription = async (scenes: Segment[]) => {
         const currentTime = playerRef.current!.getCurrentTime();
+        console.log(`readDescription called - currentTime: ${currentTime}, scenes: ${scenes.length}, audioObjects: ${props.audioObjects.length}`);
+        console.log(`audioObjects array:`, props.audioObjects);
+        
         if (scenes.length > 0) {
             for (let i = 0; i < scenes.length; i++) {
                 const startTime = timeToSeconds(scenes[i].startTime);
@@ -171,9 +313,79 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = (props: VideoPlayerProps)
                     const scene = scenes[i];
                     setCurrentDescription(scene.description);
                     if (props.descriptionAvailable) {
-                        props.audioObjects[i].play();
-                        setIsAudioOrVideoPlaying(true);
-                        setCurrentAudio(props.audioObjects[i]);
+                        const audioElement = props.audioObjects[i];
+                        console.log(`Playing audio description ${i}, audio element:`, audioElement);
+                        console.log(`Audio element src:`, audioElement?.src);
+                        console.log(`Audio element readyState:`, audioElement?.readyState);
+                        
+                        if (!audioElement) {
+                            console.error(`Audio element ${i} is undefined or null`);
+                            return;
+                        }
+                        
+                        // Step 1: Fade out video audio (ducking) ONLY if enabled
+                        if (props.duckingEnabled) {
+                            fadeVideoVolume(props.originalVideoVolume, props.originalVideoVolume * 0.2, props.fadeInDuration);
+                        }
+                        // Step 2: Start audio description at normal volume
+                        audioElement.volume = props.audioDescriptionVolume;
+                        
+                        // Try to play and handle any errors
+                        const playPromise = audioElement.play();
+                        if (playPromise !== undefined) {
+                            playPromise.then(() => {
+                                console.log(`Successfully started playing audio description ${i}`);
+                                setIsAudioOrVideoPlaying(true);
+                                setCurrentAudio(audioElement);
+                            }).catch(error => {
+                                console.error(`Failed to play audio description ${i}:`, error);
+                                console.error(`Audio element details:`, {
+                                    src: audioElement.src,
+                                    readyState: audioElement.readyState,
+                                    networkState: audioElement.networkState,
+                                    error: audioElement.error
+                                });
+                            });
+                        } else {
+                            // Fallback for older browsers
+                            setIsAudioOrVideoPlaying(true);
+                            setCurrentAudio(audioElement);
+                        }
+
+                        // Helper: Should we unduck after this segment?
+                        const shouldUnduck = () => {
+                            // If this is the last segment, always unduck
+                            if (i === scenes.length - 1) return true;
+                            const thisEnd = timeToSeconds(scenes[i].endTime);
+                            const nextStart = timeToSeconds(scenes[i + 1].startTime);
+                            const gap = nextStart - thisEnd;
+                            // Use fadeOut + fadeIn as the threshold
+                            const threshold = props.fadeOutDuration + props.fadeInDuration;
+                            return gap >= threshold;
+                        };
+
+                        // Step 3: When audio description ends, fade video back up only if needed and ducking is enabled
+                        audioElement.addEventListener('ended', () => {
+                            if (props.duckingEnabled && shouldUnduck()) {
+                                fadeVideoVolume(props.originalVideoVolume * 0.2, props.originalVideoVolume, props.fadeOutDuration);
+                            } else if (!props.duckingEnabled) {
+                                // No unduck needed, leave volume as is
+                            } else {
+                                // Keep ducked, next segment is very close
+                                console.log('Skipping unduck: next audio description is very close.');
+                            }
+                        }, { once: true });
+
+                        // Step 4: Handle manual stopping (if video is paused/stopped)
+                        audioElement.addEventListener('pause', () => {
+                            if (props.duckingEnabled && shouldUnduck()) {
+                                fadeVideoVolume(props.originalVideoVolume * 0.2, props.originalVideoVolume, props.fadeOutDuration);
+                            } else if (!props.duckingEnabled) {
+                                // No unduck needed, leave volume as is
+                            } else {
+                                console.log('Skipping unduck on pause: next audio description is very close.');
+                            }
+                        }, { once: true });
                     }
                     console.log(scene.description);
                 }
@@ -250,15 +462,18 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = (props: VideoPlayerProps)
                     onVideoUploaded={onVideoUploaded}
                     onVideoTaskCreated={onVideoTaskCreated}
                     title={props.title}
-                    setTitle={props.setTitle} />}
+                    setTitle={props.setTitle}
+                    selectedLanguage={props.selectedLanguage}
+                    setSelectedLanguage={props.setSelectedLanguage} />}
             {openProcessVideoDialog && <ProcessVideoDialog
                 videoDetails={{
                     title: props.title,
-                    metadata: metadata,
-                    narrationStyle: narrationStyle,
+                    metadata: reprocessMetadata,
+                    narrationStyle: reprocessNarrationStyle,
                     taskId: taskId,
                     analyzerId: analyzerId,
-                    videoUrl: videoUrl
+                    videoUrl: videoUrl,
+                    selectedLanguage: reprocessLanguage
                 }}
                 setScenes={props.setScenes}
                 setAudioObjects={props.setAudioObjects}
@@ -267,7 +482,18 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = (props: VideoPlayerProps)
                 onVideoProcessed={onVideoUploaded}
                 setOpenProcessDialog={setOpenProcessVideoDialog}
                 scenes={props.scenes}
-                shouldContinueWithoutAsking={videoUploaded} />}
+                shouldContinueWithoutAsking={videoUploaded}
+                audioDescriptionVolume={props.audioDescriptionVolume}
+                selectedLanguage={reprocessLanguage}
+                reprocessFields={{
+                    metadata: reprocessMetadata,
+                    setMetadata: setReprocessMetadata,
+                    narrationStyle: reprocessNarrationStyle,
+                    setNarrationStyle: setReprocessNarrationStyle,
+                    language: reprocessLanguage,
+                    setLanguage: setReprocessLanguage
+                }}
+            />}
             <Dialog open={isPreparingForDownload} modalType="modal">
                 <DialogSurface>
                     <DialogBody>
@@ -303,6 +529,74 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = (props: VideoPlayerProps)
                     </div>
                     <div className='player-button'>
                         <Button appearance="primary" onClick={download} disabled={props.scenes.length <= 0}>Download</Button>
+                    </div>
+                    {selectedVideo && taskId && analyzerId && (
+                        <div className='player-button'>
+                            <Button appearance="secondary" onClick={handleReprocess} disabled={!selectedVideo}>Reprocess</Button>
+                        </div>
+                    )}
+                    <div className='player-button'>
+                        <label htmlFor="video-volume">Video Volume: {Math.round(props.originalVideoVolume * 100)}%</label>
+                        <input 
+                            id="video-volume"
+                            type="range" 
+                            min="0" 
+                            max="1" 
+                            step="0.1" 
+                            value={props.originalVideoVolume}
+                            onChange={(e) => handleVideoVolumeChange(parseFloat(e.target.value))}
+                            style={{ marginLeft: '10px', width: '100px' }}
+                        />
+                    </div>
+                    <div className='player-button'>
+                        <label htmlFor="ad-volume">Audio Description Volume: {Math.round(props.audioDescriptionVolume * 100)}%</label>
+                        <input 
+                            id="ad-volume"
+                            type="range" 
+                            min="0" 
+                            max="1" 
+                            step="0.1" 
+                            value={props.audioDescriptionVolume}
+                            onChange={(e) => handleAudioDescriptionVolumeChange(parseFloat(e.target.value))}
+                            style={{ marginLeft: '10px', width: '100px' }}
+                        />
+                    </div>
+                    <div className='player-button'>
+                        <label htmlFor="fade-in">Fade In: {props.fadeInDuration}s</label>
+                        <input 
+                            id="fade-in"
+                            type="range" 
+                            min="0" 
+                            max="2" 
+                            step="0.1" 
+                            value={props.fadeInDuration}
+                            onChange={(e) => props.setFadeInDuration(parseFloat(e.target.value))}
+                            style={{ marginLeft: '10px', width: '100px' }}
+                        />
+                    </div>
+                    <div className='player-button'>
+                        <label htmlFor="fade-out">Fade Out: {props.fadeOutDuration}s</label>
+                        <input 
+                            id="fade-out"
+                            type="range" 
+                            min="0" 
+                            max="2" 
+                            step="0.1" 
+                            value={props.fadeOutDuration}
+                            onChange={(e) => props.setFadeOutDuration(parseFloat(e.target.value))}
+                            style={{ marginLeft: '10px', width: '100px' }}
+                        />
+                    </div>
+                    <div className='player-button'>
+                        <label>
+                            <input 
+                                type="checkbox" 
+                                checked={props.duckingEnabled}
+                                onChange={(e) => props.setDuckingEnabled(e.target.checked)}
+                                style={{ marginRight: '8px' }}
+                            />
+                            Enable Ducking (Download)
+                        </label>
                     </div>
                     {selectedVideo &&
                         <div>

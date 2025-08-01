@@ -14,6 +14,18 @@ export interface VideoPlayerProps {
     audioObjects: HTMLAudioElement[];
     setAudioObjects: any;
     onVideoDeleted: () => void;
+    originalVideoVolume: number;
+    setOriginalVideoVolume: any;
+    audioDescriptionVolume: number;
+    setAudioDescriptionVolume: any;
+    selectedLanguage: string;
+    setSelectedLanguage: any;
+    fadeInDuration: number;
+    setFadeInDuration: any;
+    fadeOutDuration: number;
+    setFadeOutDuration: any;
+    duckingEnabled: boolean;
+    setDuckingEnabled: any;
 }
 
 export interface DescriptionTableProps {
@@ -23,6 +35,8 @@ export interface DescriptionTableProps {
     setDescriptionAvailable: any;
     title: string;
     setAudioObjects: any;
+    audioDescriptionVolume: number;
+    selectedLanguage: string;
 }
 
 export interface UploadDialogProps {
@@ -32,6 +46,8 @@ export interface UploadDialogProps {
     onVideoTaskCreated: (taskInfo: VideoDetails) => void
     title: string;
     setTitle: any;
+    selectedLanguage: string;
+    setSelectedLanguage: any;
 }
 
 export interface ProcessVideoDialogProps {
@@ -44,6 +60,8 @@ export interface ProcessVideoDialogProps {
     scenes: Segment[];
     shouldContinueWithoutAsking: boolean;
     onVideoProcessed: (blobPrefix: string) => void;
+    audioDescriptionVolume: number;
+    selectedLanguage: string;
 }
 
 export interface VideoDetails {
@@ -53,6 +71,7 @@ export interface VideoDetails {
     videoUrl: string;
     taskId: string;
     analyzerId: string;
+    selectedLanguage: string;
 }
 
 export interface SavedVideoResult {
@@ -67,3 +86,49 @@ export interface Segment {
     endTime: string;
     description: string;
 }
+
+export interface LanguageConfig {
+    code: string;
+    name: string;
+    voiceName: string;
+    xmlLang: string;
+    speechRecognitionLanguage: string;
+}
+
+export const SUPPORTED_LANGUAGES: LanguageConfig[] = [
+    {
+        code: 'en-US',
+        name: 'English (US)',
+        voiceName: 'en-US-JennyNeural',
+        xmlLang: 'en-US',
+        speechRecognitionLanguage: 'en-US'
+    },
+    {
+        code: 'ar-SA',
+        name: 'Arabic (Saudi Arabia)',
+        voiceName: 'ar-SA-ZariyahNeural',
+        xmlLang: 'ar-SA',
+        speechRecognitionLanguage: 'ar-SA'
+    },
+    {
+        code: 'ar-EG',
+        name: 'Arabic (Egypt)',
+        voiceName: 'ar-EG-SalmaNeural',
+        xmlLang: 'ar-EG',
+        speechRecognitionLanguage: 'ar-EG'
+    },
+    {
+        code: 'es-ES',
+        name: 'Spanish (Spain)',
+        voiceName: 'es-ES-ElviraNeural',
+        xmlLang: 'es-ES',
+        speechRecognitionLanguage: 'es-ES'
+    },
+    {
+        code: 'fr-FR',
+        name: 'French (France)',
+        voiceName: 'fr-FR-DeniseNeural',
+        xmlLang: 'fr-FR',
+        speechRecognitionLanguage: 'fr-FR'
+    }
+];

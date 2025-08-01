@@ -1,10 +1,10 @@
 import { Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from "@mui/material";
-import { DescriptionTableProps, Segment } from "./Models"
+import { DescriptionTableProps, Segment, SUPPORTED_LANGUAGES } from "./Models"
 import React from "react"
 import { generateAudioFiles, loadAudioFilesIntoMemory } from "./helpers/TtsHelper";
 import { uploadToBlob } from "./helpers/BlobHelper";
 import { timeToSeconds } from "./helpers/Helper";
-import { Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, ProgressBar } from "@fluentui/react-components";
+import { Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, ProgressBar, Dropdown, Option } from "@fluentui/react-components";
 
 export const DescriptionTable: React.FC<DescriptionTableProps> = (props) => {
     const rows = props.scenes;
@@ -15,7 +15,13 @@ export const DescriptionTable: React.FC<DescriptionTableProps> = (props) => {
     const [rowsBackup, setRowsBackup] = React.useState<string>("");
     const [showAudioGenerateSpinner, setShowAudioGenerateSpinner] = React.useState(false);
     const [numberOfAudioFilesGenerated, setNumberOfAudioFilesGenerated] = React.useState(0);
+    const [selectedLanguageForRegeneration, setSelectedLanguageForRegeneration] = React.useState(props.selectedLanguage);
     console.log(rows);
+
+    // Sync local language state when props change
+    React.useEffect(() => {
+        setSelectedLanguageForRegeneration(props.selectedLanguage);
+    }, [props.selectedLanguage]);
 
     const handleEdit = () => {
         setRowsBackup(JSON.stringify([...rows]));
@@ -40,11 +46,13 @@ export const DescriptionTable: React.FC<DescriptionTableProps> = (props) => {
     }
 
     const regenerateAudioFiles = async (currentRows: Segment[]): Promise<void> => {
+        console.log("Regenerating audio files with language:", selectedLanguageForRegeneration);
+        console.log("Current rows to regenerate:", currentRows);
         props.setDescriptionAvailable(false);
-        await generateAudioFiles(currentRows, props.title, setNumberOfAudioFilesGenerated);
+        await generateAudioFiles(currentRows, props.title, setNumberOfAudioFilesGenerated, selectedLanguageForRegeneration);
         props.setScenes(currentRows);
         props.setDescriptionAvailable(true);
-        await loadAudioFilesIntoMemory(props.title, currentRows, props.setAudioObjects);
+        await loadAudioFilesIntoMemory(props.title, currentRows, props.setAudioObjects, props.audioDescriptionVolume);
         await regenerateJsonFile(currentRows);
     }
 
@@ -126,19 +134,45 @@ export const DescriptionTable: React.FC<DescriptionTableProps> = (props) => {
                 <h2>Audio Descriptions</h2>
                 {!props.descriptionAvailable ? (<>Loading...</>) : (
                     <>
-                        <div style={{ display: "flex", marginBottom: "20px" }}>
-                            {!isEdit && <div className="ad-editor-button">
-                                <Button onClick={handleEdit} appearance="primary">Edit</Button>
-                            </div>}
-                            {isEdit && <div className="ad-editor-button">
-                                <Button onClick={handleCancel} appearance="secondary">Cancel</Button>
-                            </div>}
-                            <div className="ad-editor-button">
-                                {<Button onClick={handleAdd} appearance="primary">Add</Button>}
-                            </div>
-                            <div className="ad-editor-button">
-                                {rows.length !== 0 && <Button onClick={handleConfirmSave} appearance="primary" disabledFocusable={disableSave}>Save</Button>}
-                            </div>
+                        <div style={{ display: "flex", marginBottom: "20px", alignItems: "center", gap: "10px" }}>
+                            {!isEdit && (
+                                <div className="ad-editor-button">
+                                    <Button onClick={handleEdit} appearance="primary">Edit</Button>
+                                </div>
+                            )}
+                            {isEdit && (
+                                <>
+                                    <div className="ad-editor-button">
+                                        <Button onClick={handleCancel} appearance="secondary">Cancel</Button>
+                                    </div>
+                                    <div className="ad-editor-button">
+                                        <Button onClick={handleAdd} appearance="primary">Add</Button>
+                                    </div>
+                                    <div className="ad-editor-button">
+                                        {rows.length !== 0 && <Button onClick={handleConfirmSave} appearance="primary" disabledFocusable={disableSave}>Save</Button>}
+                                    </div>
+                                    <div style={{ marginLeft: "20px", display: "flex", alignItems: "center", gap: "10px" }}>
+                                        <label style={{ fontWeight: "600", color: "#323130" }}>Voice Language:</label>
+                                        <Dropdown
+                                            value={SUPPORTED_LANGUAGES.find(lang => lang.code === selectedLanguageForRegeneration)?.name || 'English (US)'}
+                                            onOptionSelect={(_, data) => {
+                                                const selectedLang = SUPPORTED_LANGUAGES.find(lang => lang.name === data.optionText);
+                                                if (selectedLang) {
+                                                    setSelectedLanguageForRegeneration(selectedLang.code);
+                                                    setDisableSave(false);
+                                                }
+                                            }}
+                                            style={{ minWidth: "150px" }}
+                                        >
+                                            {SUPPORTED_LANGUAGES.map((lang) => (
+                                                <Option key={lang.code} text={lang.name}>
+                                                    {lang.name}
+                                                </Option>
+                                            ))}
+                                        </Dropdown>
+                                    </div>
+                                </>
+                            )}
                         </div>
                         <>
                             <TableContainer style={{ maxHeight: "80vh" }}>

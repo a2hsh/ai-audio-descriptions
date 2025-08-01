@@ -1,5 +1,5 @@
-import { Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Input, Label, ProgressBar, makeStyles } from "@fluentui/react-components"
-import { UploadDialogProps, VideoDetails } from "./Models";
+import { Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Input, Label, ProgressBar, makeStyles, Dropdown, Option } from "@fluentui/react-components"
+import { UploadDialogProps, VideoDetails, SUPPORTED_LANGUAGES } from "./Models";
 import { uploadToBlob } from "./helpers/BlobHelper";
 import { createAnalyzeFileTask, createContentUnderstandingAnalyzer } from "./helpers/ContentUnderstandingHelper";
 import React, { useState } from "react";
@@ -79,7 +79,7 @@ export const UploadVideoDialog = (props: UploadDialogProps) => {
         let analyzeTask = undefined;
 
         try {
-            analyzer = await createContentUnderstandingAnalyzer(title, metaData, narrationStyle);
+            analyzer = await createContentUnderstandingAnalyzer(title, metaData, narrationStyle, props.selectedLanguage);
         }
         catch {
             setUploadErrorMessage("failed to create content understanding analyzer");
@@ -94,7 +94,15 @@ export const UploadVideoDialog = (props: UploadDialogProps) => {
             return;
         }
 
-        const videoDetails: VideoDetails = { title: title, metadata: metaData, narrationStyle: narrationStyle, taskId: analyzeTask.id, analyzerId: analyzer.analyzerId, videoUrl: blobUrl };
+        const videoDetails: VideoDetails = { 
+            title: title, 
+            metadata: metaData, 
+            narrationStyle: narrationStyle, 
+            taskId: analyzeTask.id, 
+            analyzerId: analyzer.analyzerId, 
+            videoUrl: blobUrl,
+            selectedLanguage: props.selectedLanguage
+        };
         try {
             await uploadToBlob(JSON.stringify(videoDetails), title, "details.json", null);
         }
@@ -111,7 +119,8 @@ export const UploadVideoDialog = (props: UploadDialogProps) => {
             analyzerId: analyzer.analyzerId,
             videoUrl: blobUrl,
             metadata: metaData,
-            narrationStyle: narrationStyle
+            narrationStyle: narrationStyle,
+            selectedLanguage: props.selectedLanguage
         });
     }
 
@@ -137,11 +146,31 @@ export const UploadVideoDialog = (props: UploadDialogProps) => {
                         <Label htmlFor={"file-metadata"}>
                             Context (optional) - Provide any additional informaiton about the video, such as key characters, places, or events
                         </Label>
-                        <Input type="text" id={"file-metadata"} onChange={handleMetadataChange} />
+                        <Input type="text" id={"file-metadata"} value={metaData} onChange={handleMetadataChange} />
                         <Label htmlFor={"narration-style"}>
                             Narration style (optional) - such as age of target audience, or things not to mention
                         </Label>
-                        <Input type="text" id={"narration-style"} onChange={handleNarrationStyleChange} defaultValue={narrationStyle} />
+                        <Input type="text" id={"narration-style"} value={narrationStyle} onChange={handleNarrationStyleChange} />
+                        <Label htmlFor={"language-select"}>
+                            Language for audio descriptions
+                        </Label>
+                        <Dropdown
+                            id="language-select"
+                            value={SUPPORTED_LANGUAGES.find(lang => lang.code === props.selectedLanguage)?.name || 'English (US)'}
+                            onOptionSelect={(_, data) => {
+                                const selectedLang = SUPPORTED_LANGUAGES.find(lang => lang.name === data.optionText);
+                                if (selectedLang) {
+                                    props.setSelectedLanguage(selectedLang.code);
+                                }
+                            }}
+                            style={{ minWidth: '200px' }}
+                        >
+                            {SUPPORTED_LANGUAGES.map((lang) => (
+                                <Option key={lang.code} text={lang.name}>
+                                    {lang.name}
+                                </Option>
+                            ))}
+                        </Dropdown>
                     </DialogContent>
                     <DialogActions>
                         <Button appearance="secondary" onClick={() => props.onVideoUploadCancelled()}>Cancel</Button>

@@ -13,7 +13,7 @@
   "dependencies": {
     "@azure/storage-blob": "^12.15.0",
     "@emotion/styled": "^11.13.0",
-    "@ffmpeg/ffmpeg": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.1",
     "@fluentui/react-components": "^9.48.0",
     "@mui/material": "^5.16.7",
