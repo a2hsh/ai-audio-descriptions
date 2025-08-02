@@ -98,7 +98,7 @@ export const UploadVideoDialog = (props: UploadDialogProps) => {
             title: title, 
             metadata: metaData, 
             narrationStyle: narrationStyle, 
-            taskId: analyzeTask.id, 
+            taskId: analyzeTask.taskId, 
             analyzerId: analyzer.analyzerId, 
             videoUrl: blobUrl,
             selectedLanguage: props.selectedLanguage
@@ -114,7 +114,7 @@ export const UploadVideoDialog = (props: UploadDialogProps) => {
         setUploading(false);
         resetFormState();
         props.onVideoTaskCreated({
-            taskId: analyzeTask.id,
+            taskId: analyzeTask.taskId,
             title: title,
             analyzerId: analyzer.analyzerId,
             videoUrl: blobUrl,
@@ -156,17 +156,16 @@ export const UploadVideoDialog = (props: UploadDialogProps) => {
                         </Label>
                         <Dropdown
                             id="language-select"
-                            value={SUPPORTED_LANGUAGES.find(lang => lang.code === props.selectedLanguage)?.name || 'English (US)'}
+                            value={props.selectedLanguage}
                             onOptionSelect={(_, data) => {
-                                const selectedLang = SUPPORTED_LANGUAGES.find(lang => lang.name === data.optionText);
-                                if (selectedLang) {
-                                    props.setSelectedLanguage(selectedLang.code);
+                                if (data.optionValue) {
+                                    props.setSelectedLanguage(data.optionValue);
                                 }
                             }}
                             style={{ minWidth: '200px' }}
                         >
                             {SUPPORTED_LANGUAGES.map((lang) => (
-                                <Option key={lang.code} text={lang.name}>
+                                <Option key={lang.code} value={lang.code} text={lang.name}>
                                     {lang.name}
                                 </Option>
                             ))}

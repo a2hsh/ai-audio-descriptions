@@ -1,12 +1,100 @@
+// Helper to extract segments from analyzer result and rewrite them
+/**
+ * Given a ContentUnderstandingResults object, extracts the segments and rewrites them using GPT.
+ * Returns the rewritten segments array.
+ */
+export const getRewrittenSegmentsFromAnalyzerResult = async (
+  analyzerResult: ContentUnderstandingResults,
+  title: string,
+  metadata: string,
+  narrationStyle: string,
+  languageCode: string = 'en-US'
+) => {
+  // Defensive: find the first .contents[0].segments or .contents[0].fields?.Segments?.valueArray
+  let segmentsRaw: any[] = [];
+  if (analyzerResult?.result?.contents && analyzerResult.result.contents.length > 0) {
+    const content = analyzerResult.result.contents[0] as any;
+    if (Array.isArray(content.segments)) {
+      // If segments is present (array of {startTimeMs, endTimeMs, description, ...})
+      segmentsRaw = content.segments.map((seg: any) => ({
+        startTimeMs: seg.startTimeMs,
+        endTimeMs: seg.endTimeMs,
+        description: seg.description,
+        transcriptPhrases: seg.transcriptPhrases || [],
+        fields: { description: { valueString: seg.description } },
+        startTime: seg.startTimeMs,
+        endTime: seg.endTimeMs
+      }));
+    } else if (
+      content.fields &&
+      (content.fields as any).Segments &&
+      Array.isArray((content.fields as any).Segments.valueArray)
+    ) {
+      // If fields.Segments.valueArray is present (array of objects with valueObject.Description.valueString)
+      segmentsRaw = ((content.fields as any).Segments.valueArray as any[]).map((item: any, index: number) => {
+        const desc = item.valueObject?.Description?.valueString || '';
+        // Try to extract timing from the original segments if available
+        const originalSeg = content.segments?.[index];
+        const startTimeMs = originalSeg?.startTimeMs ?? item.startTimeMs ?? 0;
+        const endTimeMs = originalSeg?.endTimeMs ?? item.endTimeMs ?? (startTimeMs + 5000); // fallback: 5s duration
+        const transcriptPhrases = originalSeg?.transcriptPhrases ?? item.transcriptPhrases ?? [];
+        
+        return {
+          startTimeMs,
+          endTimeMs,
+          description: desc,
+          transcriptPhrases,
+          fields: { description: { valueString: desc } },
+          startTime: startTimeMs,
+          endTime: endTimeMs
+        };
+      });
+    }
+  }
+  // Fallback: try to extract segments from other possible shapes
+  if (!segmentsRaw.length && (analyzerResult.result as any)?.segments && Array.isArray((analyzerResult.result as any).segments)) {
+    segmentsRaw = ((analyzerResult.result as any).segments as any[]).map((seg: any) => ({
+      startTimeMs: seg.startTimeMs ?? 0,
+      endTimeMs: seg.endTimeMs ?? (seg.startTimeMs + 5000),
+      description: seg.description ?? '',
+      transcriptPhrases: seg.transcriptPhrases || [],
+      fields: { description: { valueString: seg.description ?? '' } },
+      startTime: seg.startTimeMs ?? 0,
+      endTime: seg.endTimeMs ?? (seg.startTimeMs + 5000)
+    }));
+  }
+  // If no segments found, throw
+  if (!segmentsRaw.length) throw new Error('No segments found in analyzer result.');
+
+  // Validate that segments have timing information
+  const validSegments = segmentsRaw.filter(seg => 
+    typeof seg.startTimeMs === 'number' && 
+    typeof seg.endTimeMs === 'number' && 
+    seg.endTimeMs > seg.startTimeMs
+  );
+  
+  if (!validSegments.length) {
+    throw new Error('No segments with valid timing information found in analyzer result.');
+  }
+
+  // Call the rewriting/generation logic
+  return await getAudioDescriptionsFromAnalyzeResult(
+    validSegments,
+    title,
+    metadata,
+    narrationStyle,
+    languageCode
+  );
+};
 // --- Modular Audio Description Prompt System ---
 export const GLOBAL_SYSTEM_PROMPT: { [key: string]: string } = {
-  "en-US": `You are a certified Audio-Description Writer.\n• Target audience: blind & low-vision viewers.\n• Follow WCAG 2.2 + ACME Broadcaster AD style.\n• Use present tense, third-person, neutral tone.\n• Describe ONLY what the viewer cannot hear.\n• Read on-screen text EXACTLY verbatim.\n• Never reveal future plot or character motives.\n• Never exceed the word cap provided in payload.`,
-  "ar-SA": `أنت كاتب وصف صوتي معتمد.\n• الجمهور المستهدف: المكفوفون وضعاف البصر.\n• اتبع WCAG 2.2 + أسلوب البث الاحترافي.\n• استخدم زمن المضارع، ضمير الغائب، نبرة محايدة.\n• صف فقط ما لا يمكن للمشاهد سماعه.\n• اقرأ النص الظاهر على الشاشة حرفياً.\n• لا تكشف أحداث المستقبل أو دوافع الشخصيات.\n• لا تتجاوز الحد الأقصى للكلمات المحدد في الطلب.`,
-  "es-ES": `Eres un guionista de audiodescripción certificado.\n• Audiencia: personas ciegas o con baja visión.\n• Sigue WCAG 2.2 + estilo ACME Broadcaster.\n• Usa presente, tercera persona, tono neutral.\n• Describe SOLO lo que no se puede oír.\n• Lee el texto en pantalla EXACTAMENTE como aparece.\n• Nunca reveles futuros eventos o motivos.\n• Nunca superes el límite de palabras del payload.`,
-  "fr-FR": `Vous êtes un rédacteur d’audiodescription certifié.\n• Public cible : personnes aveugles ou malvoyantes.\n• Respectez WCAG 2.2 + style diffuseur professionnel.\n• Utilisez le présent, la troisième personne, un ton neutre.\n• Décrivez UNIQUEMENT ce que le spectateur n’entend pas.\n• Lisez le texte à l’écran EXACTEMENT tel quel.\n• Ne révélez jamais l’intrigue future ou les motifs.\n• Ne dépassez jamais le nombre de mots indiqué dans la requête.`
+    "en-US": `You are a certified Audio-Description Writer.\n• Target audience: blind & low-vision viewers.\n• Follow WCAG 2.2 + ACME Broadcaster AD style.\n• Use present tense, third-person, neutral tone.\n• Describe ONLY what the viewer cannot hear.\n• Read on-screen text EXACTLY verbatim.\n• Never reveal future plot or character motives.\n• Never exceed the word cap provided in payload.`,
+    "ar-SA": `أنت كاتب وصف صوتي معتمد.\n• الجمهور المستهدف: المكفوفون وضعاف البصر.\n• اتبع WCAG 2.2 + أسلوب البث الاحترافي.\n• استخدم زمن المضارع، ضمير الغائب، نبرة محايدة.\n• صف فقط ما لا يمكن للمشاهد سماعه.\n• اقرأ النص الظاهر على الشاشة حرفياً.\n• لا تكشف أحداث المستقبل أو دوافع الشخصيات.\n• لا تتجاوز الحد الأقصى للكلمات المحدد في الطلب.`,
+    "es-ES": `Eres un guionista de audiodescripción certificado.\n• Audiencia: personas ciegas o con baja visión.\n• Sigue WCAG 2.2 + estilo ACME Broadcaster.\n• Usa presente, tercera persona, tono neutral.\n• Describe SOLO lo que no se puede oír.\n• Lee el texto en pantalla EXACTAMENTE como aparece.\n• Nunca reveles futuros eventos o motivos.\n• Nunca superes el límite de palabras del payload.`,
+    "fr-FR": `Vous êtes un rédacteur d’audiodescription certifié.\n• Public cible : personnes aveugles ou malvoyantes.\n• Respectez WCAG 2.2 + style diffuseur professionnel.\n• Utilisez le présent, la troisième personne, un ton neutre.\n• Décrivez UNIQUEMENT ce que le spectateur n’entend pas.\n• Lisez le texte à l’écran EXACTEMENT tel quel.\n• Ne révélez jamais l’intrigue future ou les motifs.\n• Ne dépassez jamais le nombre de mots indiqué dans la requête.`
 } as const;
 
-const SEGMENT_CONTRACT = `Return **ONLY** valid JSON:\n{\n  "description": "<string, ≤{{maxWords}} words>",\n  "wordCount": <integer>\n}\n\nRules:\n1. wordCount MUST equal the number of words in description.\n2. If on-screen text exists, embed it verbatim inside the flow.\n3. Do not repeat any previous segment’s visuals.\n4. Do not anticipate next segment.`;
+const SEGMENT_CONTRACT = `Return **ONLY** valid JSON:\n{\n  "description": "<string, ≤{{maxWords}} words>",\n  "wordCount": <integer>\n}\n\nRules:\n1. wordCount MUST equal the number of words in description.\n2. If on-screen text exists, you MUST embed it verbatim, word-for-word, exactly as it appears, inside the flow.\n3. NEVER summarize, paraphrase, or alter on-screen text.\n4. NEVER hallucinate or invent any text that does not appear on screen.\n5. Do not repeat any previous segment’s visuals.\n6. Do not anticipate next segment.`;
 
 import axios from "axios";
 import { aiServicesResource, aiServicesKey, gptDeployment } from "../keys";
@@ -14,165 +102,156 @@ import { delay, GenerateId, msToTime, timeToMs } from "./Helper";
 import { Segment } from "../Models";
 import { Content, ContentUnderstandingResults } from "../ContentUnderstandingModels";
 
-export const createContentUnderstandingAnalyzer = async (title: string, metadata: string, narrationStyle: string, languageCode: string = 'en-US') => {
-    let description_prompt = "";
-    
-    // Set language-specific prompts
-    switch (languageCode) {
-        case 'ar-SA':
-        case 'ar-EG':
-            description_prompt = `أنت مولد وصف صوتي محترف مختص في إنشاء أوصاف صوتية للفيديوهات لمساعدة المكفوفين وضعاف البصر. الوصف الصوتي هو خدمة إمكانية وصول حيوية توفر سرداً منطوقاً للعناصر البصرية خلال الفترات الصامتة الطبيعية في الحوار، مما يتيح للجمهور الأعمى وضعيف البصر تجربة المحتوى المرئي بالكامل.
+const analyserPrompts = {
+    "en-US": `You are a professional Audio Description Generator specialized in creating audio descriptions for videos to assist blind and low-vision viewers. Audio description is an accessibility service that provides spoken narration of visual elements in a video, such as actions, settings, and on-screen text, to ensure that viewers who cannot see the video can understand its content.\n\nWrite an audio description in English that describes what happens across the frames in this scene. Do not repeat information from the previous description. Do not repeat information already present in the written text. Do not explain the meaning of things. Write clearly, simply, and professionally.`,
+    "ar-SA": `أنت مولد وصف صوتي محترف مختص في إنشاء أوصاف صوتية للفيديوهات لمساعدة المكفوفين وضعاف البصر. الوصف الصوتي هو خدمة إمكانية وصول توفر سردًا منطوقًا للعناصر المرئية في الفيديو، مثل الأفعال والإعدادات والنصوص المعروضة على الشاشة، لضمان فهم المشاهدين الذين لا يستطيعون رؤية الفيديو لمحتواه.\n\nاكتب وصفاً صوتياً باللغة العربية يصف ما حدث عبر الإطارات في هذا المشهد. لا تكرر معلومات من الوصف السابق. لا تكرر معلومات موجودة في النص المكتوب. لا تشرح معنى الأشياء. اكتب بوضوح وبساطة واحترافية.`,
+    "es-ES": `Eres un generador profesional de audiodescripción especializado en crear descripciones de audio para videos que ayudan a personas ciegas y con baja visión. La audiodescripción es un servicio de accesibilidad que proporciona una narración hablada de los elementos visuales en un video, como acciones, escenarios y texto en pantalla, para asegurar que los espectadores que no pueden ver el video comprendan su contenido.\n\nEscribe una pista de audiodescripción en español que describa lo que sucede a través de los fotogramas en esta escena. No repitas información de la descripción anterior. No repitas información ya presente en el texto escrito. No expliques el significado de las cosas. Escribe con claridad, sencillez y profesionalidad.`,
+    "fr-FR": `Vous êtes un générateur professionnel d’audiodescription spécialisé dans la création de descriptions audio pour les vidéos afin d’aider les personnes aveugles et malvoyantes. L’audiodescription est un service d’accessibilité qui fournit une narration parlée des éléments visuels d’une vidéo, tels que les actions, les décors et le texte à l’écran, pour s’assurer que les spectateurs qui ne peuvent pas voir la vidéo comprennent son contenu.\n\nRédigez une description audio en français qui décrit ce qui se passe à travers les images dans cette scène. Ne répétez pas les informations de la description précédente. Ne répétez pas les informations déjà présentes dans le texte écrit. N’expliquez pas la signification des choses. Écrivez de manière claire, simple et professionnelle.`
+}
 
-## هدفك الأساسي:
-أنت كاتب وصف صوتي خبير مدرب على المعايير المهنية المستخدمة من قبل المذيعين الرئيسيين وخدمات البث وقاعات السينما. يجب أن تتطابق أوصافك مع جودة وأسلوب مسارات الوصف الصوتي المنتجة مهنياً.
+export const createContentUnderstandingAnalyzer = async (
+    title: string,
+    metadata: string,
+    narrationStyle: string,
+    languageCode: string = "en-US"
+) => {
+    let description_prompt = analyserPrompts[languageCode as keyof typeof analyserPrompts] || analyserPrompts["en-US"];
 
-## المبادئ الأساسية:
+    // --- Safe concatenation (fixes the + || precedence bug) ---
+    description_prompt += "Use the below information about the video to enhance the descriptions:\n\n";
+    if (title) description_prompt += `* Title: ${title}\n`;
+    if (metadata) description_prompt += `* Context: ${metadata}\n`;
+    if (narrationStyle) description_prompt += `* Writing Style: ${narrationStyle}\n`;
 
-### 1. إمكانية الوصول أولاً
-- هدفك الأساسي هو جعل المحتوى المرئي قابلاً للوصول للمشاهدين المكفوفين وضعاف البصر
-- افترض أن جمهورك لا يستطيع رؤية أي شيء على الشاشة ويعتمد كلياً على أوصافك
-- كل عنصر بصري مهم يساهم في الفهم يجب وصفه
-
-### 2. المعايير المهنية
-- اتبع إرشادات الوصف الصوتي المعتمدة المستخدمة في الصناعة
-- اكتب بنفس مستوى الاحترافية لمقدمي الوصف الصوتي المعتمدين
-- حافظ على الاتساق مع المصطلحات والعبارات التقليدية للوصف الصوتي
-
-## إرشادات الكتابة التفصيلية:
-
-### ما يجب وصفه:
-✅ **الأفعال البصرية الأساسية**: حركات الشخصيات، الإيماءات، تعبيرات الوجه التي تنقل المشاعر أو المعنى
-✅ **إعدادات المشهد**: المواقع، وقت اليوم، الطقس، التغييرات البيئية
-✅ **مظاهر الشخصيات**: عند ظهور شخصيات جديدة، صف العمر، الملابس، الملامح المميزة ذات الصلة بالقصة
-✅ **النص المرئي (مهم جداً)**: اقرأ أي نص يظهر على الشاشة بالضبط كما هو مكتوب - العناوين، اللافتات، الوثائق، الرسائل، التسميات التوضيحية، أو أي كتابة مرئية. لا تلخص أو تغير النص - اقرأه حرفياً
-✅ **عناصر السرد البصري**: الفكاهة البصرية، الصور الرمزية، الرموز المهمة
-✅ **مشاهد الحركة**: مشاهد القتال، مطاردات، الكوميديا الجسدية - صف التطور بوضوح
-✅ **الإشارات العاطفية البصرية**: الدموع، الابتسامات، لغة الجسد التي تكشف مشاعر الشخصية
-✅ **المرئيات الحاسمة للحبكة**: الأشياء، الوثائق، الخرائط، أو المعلومات البصرية الأساسية للفهم
-
-### ما لا يجب وصفه:
-❌ **المعلومات المكررة**: لا تكرر ما هو واضح بالفعل من الحوار أو الصوت
-❌ **الأفعال الواضحة**: لا تصف الأفعال الأساسية إذا كانت واضحة من الصوت
-❌ **التفسير**: تجنب شرح المعاني أو الدوافع أو آثار الحبكة المستقبلية
-❌ **التفاصيل المفرطة**: لا تصف كل عنصر بصري بسيط - ركز على ما هو مهم سردياً
-
-### اللغة والأسلوب:
-
-**النبرة**: مهنية، واضحة، وموضوعية - مثل راوٍ ماهر
-**الزمن**: المضارع للحدث الحالي، الماضي فقط عند الإشارة إلى أحداث سابقة
-**الصوت**: الغائب، حافظ على المسافة السردية
-**المفردات**: 
-- استخدم لغة دقيقة واقتصادية
-- اختر أفعالاً قوية ومحددة بدلاً من العامة
-- استخدم مصطلحات السينما/التلفزيون عند الاقتضاء
-- تجنب اللغة المزهرة أو الدرامية المفرطة إلا إذا تطابق مع نبرة المحتوى
-
-**بنية الجملة**:
-- نوع في أطوال الجمل للحصول على إيقاع طبيعي
-- استخدم جملاً قصيرة وواضحة لمشاهد الحركة
-- الجمل الأطول مقبولة لوصف الإعدادات خلال فترات توقف الحوار
-- ابدأ بأهم المعلومات في كل جملة
-
-### التوقيت والوتيرة:
-- **ملائمة الوقت المتاح**: يجب أن تناسب الأوصاف الفترات الصامتة دون عجلة أو انقطاع
-- **إعطاء الأولوية للمعلومات**: إذا كان الوقت محدوداً، صف أهم المرئيات للحبكة أولاً
-- **الإيقاع الطبيعي**: اكتب ليُقرأ بصوت عالٍ - تأكد من تدفق الأوصاف بسلاسة عند القراءة
-
-### الاعتبارات التقنية:
-- **وعي السياق السابق**: لا تكرر المعلومات من الأوصاف الحديثة
-- **الاستمرارية**: حافظ على الاتساق في أوصاف الشخصيات والمواقع
-- **تماسك المشهد**: ساعد المشاهدين على فهم العلاقات المكانية وجغرافية المشهد
-
-## معايير الجودة:
-
-**ممتاز**: "تدخل سارة المطعم خافت الإضاءة، قطرات المطر تتساقط من معطفها الأحمر. تتفحص الكبائن الفارغة قبل أن تلمح ماركوس في الزاوية، رأسه بين يديه."
-
-**ضعيف**: "امرأة تدخل مكاناً. تنظر حولها وترى رجلاً."
-
-اكتب وصفاً صوتياً باللغة العربية يصف ما حدث عبر الإطارات في هذا المشهد. لا تكرر معلومات من الوصف السابق. لا تكرر معلومات موجودة في النص المكتوب. لا تشرح معنى الأشياء. اكتب بوضوح وبساطة واحترافية.
-
-`;
-            break;
-        case 'es-ES':
-            description_prompt = "Escribe una pista de audiodescripción en español describiendo lo que pasó a través de los fotogramas en esta escena. No repitas información de la descripción anterior. No repitas información del transcrito. No expliques lo que significan las cosas. Escribe con claridad y sencillez.\n\nIMPORTANTE: Si aparece algún texto en pantalla (títulos, letreros, documentos, mensajes, subtítulos, etiquetas, o cualquier escritura visible), léelo exactamente tal como aparece palabra por palabra. No resumas ni parafrasees el texto.\n\n";
-            break;
-        case 'fr-FR':
-            description_prompt = "Écrivez une piste d'audiodescription en français décrivant ce qui s'est passé à travers les images de cette scène. Ne répétez pas les informations de la description précédente. Ne répétez pas les informations de la transcription. N'expliquez pas ce que signifient les choses. Écrivez avec clarté et simplicité.\n\nIMPORTANT: Si du texte apparaît à l'écran (titres, panneaux, documents, messages, sous-titres, étiquettes, ou toute écriture visible), lisez-le exactement mot pour mot tel qu'il apparaît. Ne résumez pas et ne paraphrasez pas le texte.\n\n";
-            break;
-        default:
-            description_prompt = "You are a professional Audio Description Generator, specifically designed to create audio descriptions for videos to assist blind and visually impaired viewers. Write an audio description track in English describing what happened across the frames in this scene. Do not repeat information from the previous description. Do not repeat information in the transcript. Do not explain what things mean. Write clearly and simply.\n\nIMPORTANT: If any text appears on screen (titles, signs, documents, messages, captions, labels, or any visible writing), read it exactly verbatim as it appears. Do not summarize or paraphrase text - read it word-for-word.\n\n";
-    }
-    
-    description_prompt += "Use the below information about the video to enhance the descriptions:\n\n"
-    + (title ?? "") || `* Title: ${title}\n`
-    + (metadata ?? "") || `* Context: ${metadata}\n`
-    + (narrationStyle ?? "") || `Writing Style: ${narrationStyle}\n`;
-
+    // --- Build analyzer on top of the prebuilt video analyzer (enables STT/transcript) ---
     const id = GenerateId();
-    const url = getContentUnderstandingBaseUrl(id);
+    const url = getContentUnderstandingBaseUrl(id); // NOTE: ensure this uses api-version=2025-05-01-preview
 
     const data = {
         description: "Audio Description video analyzer",
-        scenario: "videoShot",
+        baseAnalyzerId: "prebuilt-videoAnalyzer",
         config: {
-          returnDetails: true
+            returnDetails: true,
+            locales: Array.from(new Set([languageCode, "en-US"])), // speech hints
+            segmentationMode: "auto"
         },
         fieldSchema: {
-          fields: {
-            Description: {
-              type: "string",
-              description: description_prompt
+            // optional: name/description, purely cosmetic
+            // name: "AudioDescriptionSchema",
+            // description: "Per-segment AD fields",
+            fields: {
+                Segments: {
+                    type: "array",
+                    items: {
+                        type: "object",
+                        properties: {
+                            // (optional) IDs or timing placeholders if you want them in fields too
+                            // SegmentId: { type: "string" },
+                            // Start: { type: "time", method: "extract" },
+                            // End:   { type: "time", method: "extract" },
+
+                            // The generated AD text goes here
+                            Description: {
+                                type: "string",
+                                method: "generate",
+                                description: description_prompt
+                            }
+                        }
+                    }
+                }
             }
-          }
         }
-      };
+    };
 
     const config = {
         headers: {
             "ocp-apim-subscription-key": aiServicesKey,
-            "x-ms-useragent": "ai-audio-descriptions/1.0"
-        }
-    }
-    const result = await axios.put(url, data, config);
-    
-    const statusUrl = result.headers["operation-location"].toString();
-    let statusResult = await axios.get(statusUrl, config);
+            "x-ms-useragent": "ai-audio-descriptions/1.0",
+        },
+    };
 
-    while(statusResult.data.status?.toLowerCase() !== "succeeded") {
-        await new Promise(r => setTimeout(r, 1000));
-        statusResult = await axios.get(statusUrl, config);
+    try {
+        // LRO: create analyzer
+        const putResult = await axios.put(url, data, config);
+        const statusUrl = String(putResult.headers["operation-location"]);
+
+        // Poll until succeeded
+        let statusResult = await axios.get(statusUrl, config);
+        while (String(statusResult.data.status).toLowerCase() !== "succeeded") {
+            await delay(1000);
+            statusResult = await axios.get(statusUrl, config);
+        }
+
+        // Return the actual analyzer id you created (not the raw PUT payload)
+        return { analyzerId: id };
+    } catch (err: any) {
+        // Bubble up a concise, useful error
+        const msg =
+            err?.response?.data?.error?.message ||
+            err?.message ||
+            "Failed to create Content Understanding analyzer.";
+        throw new Error(msg);
     }
-    return result.data;    
 };
+
+
 
 export const createAnalyzeFileTask = async (analyzerId: string, videoUrl: string) => {
-    const url = getContentUnderstandingBaseUrl(analyzerId, ":analyze");
-    const data = {
-        url: videoUrl
-    };
-    const config = {
-        headers: {
-            "ocp-apim-subscription-key": aiServicesKey,
-            "x-ms-useragent": "ai-audio-descriptions/1.0"
-        }
-      }
-    const result = await axios.post(url, data, config);
-    return result.data;    
+  if (!videoUrl || typeof videoUrl !== "string" || videoUrl.trim() === "") {
+    throw new Error("A valid, non-empty videoUrl must be provided to analyze.");
+  }
+  const url = getContentUnderstandingBaseUrl(analyzerId, ":analyze");
+  const data = { url: videoUrl };
+  const config = {
+    headers: {
+      "ocp-apim-subscription-key": aiServicesKey,
+      "x-ms-useragent": "ai-audio-descriptions/1.0",
+      "Content-Type": "application/json",
+    },
+  };
+
+  const res = await axios.post(url, data, config);
+
+  const operationLocation = String(res.headers["operation-location"] || "");
+  if (!operationLocation) {
+    throw new Error("Missing operation-location header from :analyze response.");
+  }
+
+  // e.g. https://.../contentunderstanding/analyzerResults/{taskId}?api-version=...
+  const taskId = operationLocation.split("/").pop()?.split("?")[0] || "";
+
+  return {
+    operationLocation,
+    taskId,
+    initial: res.data, // optional, keep if you need it
+  };
 };
 
-export const getAnalyzeTaskInProgress = async (analyzerId: string, taskId: string): Promise<ContentUnderstandingResults> => {
-    const url = getContentUnderstandingBaseUrl(analyzerId, `/results/${taskId}`);
-    const config = {
-        headers: {
-            "ocp-apim-subscription-key": aiServicesKey,
-            "x-ms-useragent": "ai-audio-descriptions/1.0"
-        }
-      }
-    const result = await axios.get(url, config);
-    return result.data;
-}
+export const getAnalyzeTaskInProgress = async (
+  arg1: string,
+  maybeTaskId?: string
+): Promise<ContentUnderstandingResults> => {
+  // Backward-compatible signature:
+  // - If caller passes (operationLocation) -> use it directly.
+  // - If caller passes (analyzerId, taskId) -> we'll ignore analyzerId and build analyzerResults URL from taskId.
 
-export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], title: string, metadata: string, narrationStyle: string, languageCode: string = 'en-US') : Promise<Segment[]> => {
+  const isOperationLocation = arg1.includes("/analyzerResults/");
+  const url = isOperationLocation
+    ? arg1 // full operation-location returned by :analyze
+    : getAnalyzerResultsUrl(String(maybeTaskId)); // build /analyzerResults/{taskId}
+
+  const config = {
+    headers: {
+      "ocp-apim-subscription-key": aiServicesKey,
+      "x-ms-useragent": "ai-audio-descriptions/1.0",
+    },
+  };
+
+  const res = await axios.get(url, config);
+  return res.data as ContentUnderstandingResults;
+};
+
+export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], title: string, metadata: string, narrationStyle: string, languageCode: string = 'en-US'): Promise<Segment[]> => {
     // In-browser log collection
     const logLines: string[] = [];
 
@@ -186,7 +265,7 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
             const isSilent = segment.transcriptPhrases.length === 0;
             const durationMs = segment.endTimeMs - segment.startTimeMs;
             logLines.push(
-                `SEGMENT ${idx + 1}: ${segment.startTimeMs}-${segment.endTimeMs} (${(durationMs/1000).toFixed(3)}s) | ${isSilent ? 'SILENT' : 'SPEECH'}\n` +
+                `SEGMENT ${idx + 1}: ${segment.startTimeMs}-${segment.endTimeMs} (${(durationMs / 1000).toFixed(3)}s) | ${isSilent ? 'SILENT' : 'SPEECH'}\n` +
                 `  Original: ${JSON.stringify(description).substring(0, 300)}\n` +
                 `  Transcript phrases: ${segment.transcriptPhrases.length}\n`
             );
@@ -326,6 +405,7 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
 
     // --- Modular prompt integration ---
     const previousDescriptions: string[] = [];
+    const rewrittenDescriptions: string[] = [];
     for (let i = 0; i < mergedIntervals.length; i++) {
         const segment = mergedIntervals[i];
         const duration = timeToMs(segment.endTime) - timeToMs(segment.startTime);
@@ -337,22 +417,18 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
         let maxWords = 50;
         let wordCountTolerance = 2;
         if (languageCode === 'ar-SA' || languageCode === 'ar-EG') {
-            // For Arabic, use higher min/max and looser tolerance
             minWords = 12;
             maxWords = durationInSeconds > 7 ? 35 : 20;
             wordCountTolerance = 4;
         }
-        // First 3 intervals: always context-setting, so boost minWords
         if (i < 3) {
             minWords = Math.max(minWords, 14);
             maxWords = Math.max(maxWords, 25);
         }
-        // If the original segment had <2 transcript phrases, boost minWords for more detail
         const orig = allSegmentsInTheVideo.find(s => msToTime(s.startTime) === segment.startTime && msToTime(s.endTime) === segment.endTime);
         if (orig && orig.transcriptPhraseCount !== undefined && orig.transcriptPhraseCount < 2) {
             minWords = Math.max(minWords, 14);
         }
-        // If the original description is long, allow longer rewrites
         if (segment.description && segment.description.split(/\s+/).length > maxWords) {
             maxWords = Math.min(segment.description.split(/\s+/).length + 5, 45);
         }
@@ -363,11 +439,9 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
             nextDescription = mergedIntervals[i + 1].description || "";
         }
 
-        // --- Compose modular prompt ---
         const globalSystem = (GLOBAL_SYSTEM_PROMPT[languageCode] || GLOBAL_SYSTEM_PROMPT["en-US"]) +
-            "\n\n[SCENE CONTINUITY]: Ensure the description flows naturally from the previous context. Avoid repeating static details (lighting, architecture, etc.) or details already mentioned in the last 3 segments. Focus on what is new, changed, or important for the listener to follow the scene. Use linking phrases or transitions for better flow. If the interval is long, summarize the scene's progression.";
+            "\n\n[IMPORTANT]: If any text appears on screen (titles, signs, documents, messages, captions, labels, or any visible writing), you MUST read it exactly, word-for-word, as it appears. Do NOT summarize, paraphrase, or alter the text in any way. Do NOT hallucinate or invent any text. If there is no on-screen text, do not invent any.\n\n[SCENE CONTINUITY]: Ensure the description flows naturally from the previous context. Avoid repeating static details (lighting, architecture, etc.) or details already mentioned in the last 3 segments. Focus on what is new, changed, or important for the listener to follow the scene. Use linking phrases or transitions for better flow. If the interval is long, summarize the scene's progression.";
         const segmentContract = SEGMENT_CONTRACT.replace("{{maxWords}}", adjustedWordCount.toString());
-        // Pass the last 3 previous descriptions for context, plus interval index and times
         const prevContextArr = previousDescriptions.slice(-3);
         const payload = {
             title,
@@ -388,7 +462,6 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
             { role: "user", content: JSON.stringify(payload) }
         ];
 
-        // Log the full prompt for this GPT call
         logLines.push(
             `\n[GPT PROMPT] SYSTEM (global):\n${globalSystem.substring(0, 2000)}${globalSystem.length > 2000 ? '\n...TRUNCATED...' : ''}`
         );
@@ -399,7 +472,6 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
             `[GPT PROMPT] USER:\n${JSON.stringify(payload).substring(0, 2000)}${JSON.stringify(payload).length > 2000 ? '\n...TRUNCATED...' : ''}`
         );
 
-        // --- Call GPT and parse JSON response ---
         let rewriteResult = "";
         let actualWordCount = 0;
         let retry = 0;
@@ -416,17 +488,14 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
                     throw new Error("Invalid JSON shape");
                 }
             } catch {
-                // fallback: try to extract description as string
                 rewriteResult = typeof gptResponse === 'string' ? gptResponse : '';
                 actualWordCount = rewriteResult.trim().split(/\s+/).length;
                 responseObj = null;
             }
-            // Accept if wordCount matches maxWords exactly or within tolerance
             if (Math.abs(actualWordCount - adjustedWordCount) <= wordCountTolerance) break;
             retry++;
         }
 
-        // Log original and rewritten description side by side for debugging
         logLines.push(
             `  [ORIGINAL] Combined: ${JSON.stringify(segment.description).substring(0, 300)}\n` +
             `  [REWRITTEN] (target: ${adjustedWordCount}, actual: ${actualWordCount} words, retries: ${retry})\n` +
@@ -438,8 +507,13 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
             `---`
         );
 
-        segment.description = rewriteResult;
+        rewrittenDescriptions.push(rewriteResult);
         previousDescriptions.push(rewriteResult);
+    }
+
+    // Overwrite mergedIntervals descriptions with rewritten ones
+    for (let i = 0; i < mergedIntervals.length; i++) {
+        mergedIntervals[i].description = rewrittenDescriptions[i];
     }
 
     // Download log as a text file
@@ -456,12 +530,11 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
             URL.revokeObjectURL(url);
         }, 1000);
     } catch (e) {
-        // fallback: just log to console
         console.log('Failed to download log file:', e);
         console.log(logLines.join('\n'));
     }
 
-    return mergedIntervals
+    return mergedIntervals;
 }
 
 // Modular GPT output for new prompt structure
@@ -508,5 +581,9 @@ const getGptOutputModular = async (messages: any[]): Promise<string> => {
 };
 
 const getContentUnderstandingBaseUrl = (analyzerId: string, operation?: string) => {
-    return `https://${aiServicesResource}.cognitiveservices.azure.com/contentunderstanding/analyzers/${analyzerId}${operation ? operation : ""}?api-version=2024-12-01-preview`
-}
+    return `https://${aiServicesResource}.cognitiveservices.azure.com/contentunderstanding/analyzers/${analyzerId}${operation ? operation : ""}?api-version=2025-05-01-preview`
+};
+
+const getAnalyzerResultsUrl = (taskId: string) => {
+  return `https://${aiServicesResource}.cognitiveservices.azure.com/contentunderstanding/analyzerResults/${taskId}?api-version=2025-05-01-preview`;
+};

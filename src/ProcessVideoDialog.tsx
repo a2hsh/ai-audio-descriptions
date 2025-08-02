@@ -3,7 +3,7 @@ import React, { useEffect } from "react";
 import { Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Field, ProgressBar } from "@fluentui/react-components";
 import { uploadToBlob } from "./helpers/BlobHelper";
 import { generateAudioFiles, loadAudioFilesIntoMemory } from "./helpers/TtsHelper";
-import { getAnalyzeTaskInProgress, getAudioDescriptionsFromAnalyzeResult, createContentUnderstandingAnalyzer, createAnalyzeFileTask } from "./helpers/ContentUnderstandingHelper";
+import { getAnalyzeTaskInProgress, getRewrittenSegmentsFromAnalyzerResult, createContentUnderstandingAnalyzer, createAnalyzeFileTask } from "./helpers/ContentUnderstandingHelper";
 
 interface ReprocessFields {
     metadata: string;
@@ -22,22 +22,23 @@ export const ProcessVideoDialog: React.FC<Props> = (props) => {
     const { title, taskId, analyzerId, videoUrl } = props.videoDetails;
     // For reprocessing, allow editing context, narration style, and language
     const reprocessFields: Partial<ReprocessFields> = props.reprocessFields || {};
-    // Always prefer videoDetails as the source of truth for initial values
-    const [localMetadata, setLocalMetadata] = React.useState(
-        (reprocessFields?.metadata && reprocessFields.metadata.trim() !== "")
+    // Always prefer latest props for initial values
+    const [localMetadata, setLocalMetadata] = React.useState("");
+    const [localNarrationStyle, setLocalNarrationStyle] = React.useState("");
+    const [localLanguage, setLocalLanguage] = React.useState("en-US");
+
+    // Sync local state with props when dialog opens
+    React.useEffect(() => {
+        setLocalMetadata((reprocessFields?.metadata && reprocessFields.metadata.trim() !== "")
             ? reprocessFields.metadata
-            : (props.videoDetails.metadata || "")
-    );
-    const [localNarrationStyle, setLocalNarrationStyle] = React.useState(
-        (reprocessFields?.narrationStyle && reprocessFields.narrationStyle.trim() !== "")
+            : (props.videoDetails.metadata || ""));
+        setLocalNarrationStyle((reprocessFields?.narrationStyle && reprocessFields.narrationStyle.trim() !== "")
             ? reprocessFields.narrationStyle
-            : (props.videoDetails.narrationStyle || "")
-    );
-    const [localLanguage, setLocalLanguage] = React.useState(
-        (reprocessFields?.language && reprocessFields.language.trim() !== "")
+            : (props.videoDetails.narrationStyle || ""));
+        setLocalLanguage((reprocessFields?.language && reprocessFields.language.trim() !== "")
             ? reprocessFields.language
-            : (props.videoDetails.selectedLanguage || "en-US")
-    );
+            : (props.videoDetails.selectedLanguage || "en-US"));
+    }, [props.videoDetails, reprocessFields?.metadata, reprocessFields?.narrationStyle, reprocessFields?.language]);
     const [showForm, setShowForm] = React.useState(true);
     const [videoProcessing, setVideoProcessing] = React.useState(false);
     const [rewritingDescriptions, setRewritingDescriptions] = React.useState(false);
@@ -48,68 +49,74 @@ export const ProcessVideoDialog: React.FC<Props> = (props) => {
 
     // moved inside handleContinue
 
+    // Always trigger a new analysis on reprocess, regardless of field changes
     const handleContinue = React.useCallback(async () => {
-        let newAnalyzerId = analyzerId;
-        let newTaskId = taskId;
-        // Check if context, narration style, or language changed from original
-        if (
-            localMetadata !== (props.videoDetails.metadata ?? "") ||
-            localNarrationStyle !== (props.videoDetails.narrationStyle ?? "") ||
-            localLanguage !== (props.videoDetails.selectedLanguage ?? "en-US")
-        ) {
-            setShowForm(false);
-            setVideoProcessing(true);
-            try {
-                const analyzer = await createContentUnderstandingAnalyzer(title, localMetadata, localNarrationStyle, localLanguage);
-                newAnalyzerId = analyzer.analyzerId;
-                const analyzeTask = await createAnalyzeFileTask(newAnalyzerId, videoUrl);
-                newTaskId = analyzeTask.id;
-            } catch (e: any) {
-                setProcessingError("Failed to create new analyzer or analyze task. " + (typeof e === 'object' && e && 'message' in e ? (e as any).message : String(e)));
-                setVideoProcessing(false);
-                setShowForm(true);
-                return;
-            }
+        setShowForm(false);
+        setVideoProcessing(true);
+        // Always update parent state with latest values before processing
+        if (reprocessFields?.setMetadata) reprocessFields.setMetadata(localMetadata);
+        if (reprocessFields?.setNarrationStyle) reprocessFields.setNarrationStyle(localNarrationStyle);
+        if (reprocessFields?.setLanguage) reprocessFields.setLanguage(localLanguage);
+        let newAnalyzerId = "";
+        let newTaskId = "";
+        let operationLocation = "";
+        try {
+            const analyzer = await createContentUnderstandingAnalyzer(title, localMetadata, localNarrationStyle, localLanguage);
+            newAnalyzerId = analyzer.analyzerId;
+            const analyzeTask = await createAnalyzeFileTask(newAnalyzerId, videoUrl);
+            newTaskId = analyzeTask.taskId;
+            operationLocation = analyzeTask.operationLocation;
+        } catch (e: any) {
+            setProcessingError("Failed to create new analyzer or analyze task. " + (typeof e === 'object' && e && 'message' in e ? (e as any).message : String(e)));
+            setVideoProcessing(false);
+            setShowForm(true);
+            return;
         }
-        if (!newTaskId || !newAnalyzerId) {
-            setProcessingError("Missing analyzer or task ID.");
+        if (!newTaskId || !newAnalyzerId || !operationLocation) {
+            setProcessingError("Missing analyzer, task ID, or operation-location.");
             return;
         }
         setShowForm(false);
         setVideoProcessing(true);
-        while (true) {
-            const task = await getAnalyzeTaskInProgress(newAnalyzerId, newTaskId);
-            if (task.status?.toLowerCase() === "succeeded") {
-                setVideoProcessing(false);
-                setRewritingDescriptions(true);
-                const audioDescriptions = await getAudioDescriptionsFromAnalyzeResult(
-                    task.result.contents,
-                    title,
-                    localMetadata,
-                    localNarrationStyle,
-                    localLanguage
-                );
-                props.setScenes(audioDescriptions);
-                await uploadToBlob(JSON.stringify(audioDescriptions), title, title + ".json", null);
-                setGeneratingAudio(true);
-                setRewritingDescriptions(false);
-                await generateAudioFiles(audioDescriptions, title, setNumberOfAudioFilesGenerated, localLanguage);
-                setGeneratingAudio(false);
-                setLoadingAudio(true);
-                props.setDescriptionAvailable(true);
-                await loadAudioFilesIntoMemory(title, audioDescriptions, props.setAudioObjects, props.audioDescriptionVolume);
-                setLoadingAudio(false);
-                break;
+        // --- New polling logic using operationLocation ---
+        let status;
+        try {
+            status = await getAnalyzeTaskInProgress(operationLocation);
+            while (status.status === "Running" || status.status === "NotStarted") {
+                await new Promise(r => setTimeout(r, 1500));
+                status = await getAnalyzeTaskInProgress(operationLocation);
             }
-            const errorTask = task as any;
-            if (errorTask.error) {
-                const message = errorTask.error?.message || "An error occurred while processing the video";
-                setProcessingError(message);
-                break;
-            }
-            await new Promise(r => setTimeout(r, 15000));
-            setProcessingError("");
+        } catch (e: any) {
+            setProcessingError("Failed to poll analyze task. " + (typeof e === 'object' && e && 'message' in e ? (e as any).message : String(e)));
+            setVideoProcessing(false);
+            setShowForm(true);
+            return;
         }
+        if (status.status !== "Succeeded") {
+            setProcessingError(`Analyze failed: ${status.status}`);
+            setVideoProcessing(false);
+            setShowForm(true);
+            return;
+        }
+        setVideoProcessing(false);
+        setRewritingDescriptions(true);
+        const audioDescriptions = await getRewrittenSegmentsFromAnalyzerResult(
+            status,
+            title,
+            localMetadata,
+            localNarrationStyle,
+            localLanguage
+        );
+        props.setScenes(audioDescriptions);
+        await uploadToBlob(JSON.stringify(audioDescriptions), title, title + ".json", null);
+        setGeneratingAudio(true);
+        setRewritingDescriptions(false);
+        await generateAudioFiles(audioDescriptions, title, setNumberOfAudioFilesGenerated, localLanguage);
+        setGeneratingAudio(false);
+        setLoadingAudio(true);
+        props.setDescriptionAvailable(true);
+        await loadAudioFilesIntoMemory(title, audioDescriptions, props.setAudioObjects, props.audioDescriptionVolume);
+        setLoadingAudio(false);
         // resetFormState inline
         setVideoProcessing(false);
         setShowForm(true);
@@ -117,10 +124,14 @@ export const ProcessVideoDialog: React.FC<Props> = (props) => {
         setLoadingAudio(false);
         setRewritingDescriptions(false);
         setNumberOfAudioFilesGenerated(0);
+        // Update parent state after reprocessing
+        if (reprocessFields?.setMetadata) reprocessFields.setMetadata(localMetadata);
+        if (reprocessFields?.setNarrationStyle) reprocessFields.setNarrationStyle(localNarrationStyle);
+        if (reprocessFields?.setLanguage) reprocessFields.setLanguage(localLanguage);
         props.setVideoUrl(videoUrl);
         props.onVideoProcessed(title);
         props.setOpenProcessDialog(false);
-    }, [taskId, analyzerId, setShowForm, setVideoProcessing, setRewritingDescriptions, setGeneratingAudio, setLoadingAudio, setNumberOfAudioFilesGenerated, setProcessingError, props, title, videoUrl, localMetadata, localNarrationStyle, localLanguage]);
+    }, [setShowForm, setVideoProcessing, setRewritingDescriptions, setGeneratingAudio, setLoadingAudio, setNumberOfAudioFilesGenerated, setProcessingError, props, title, videoUrl, localMetadata, localNarrationStyle, localLanguage, reprocessFields]);
 
     useEffect(() => {
         if (props.shouldContinueWithoutAsking) {
