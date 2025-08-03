@@ -1,101 +1,3 @@
-// Helper to extract segments from analyzer result and rewrite them
-/**
- * Given a ContentUnderstandingResults object, extracts the segments and rewrites them using GPT.
- * Returns the rewritten segments array.
- */
-export const getRewrittenSegmentsFromAnalyzerResult = async (
-  analyzerResult: ContentUnderstandingResults,
-  title: string,
-  metadata: string,
-  narrationStyle: string,
-  languageCode: string = 'en-US'
-) => {
-  // Defensive: find the first .contents[0].segments or .contents[0].fields?.Segments?.valueArray
-  let segmentsRaw: any[] = [];
-  if (analyzerResult?.result?.contents && analyzerResult.result.contents.length > 0) {
-    const content = analyzerResult.result.contents[0] as any;
-    if (Array.isArray(content.segments)) {
-      // If segments is present (array of {startTimeMs, endTimeMs, description, ...})
-      segmentsRaw = content.segments.map((seg: any) => ({
-        startTimeMs: seg.startTimeMs,
-        endTimeMs: seg.endTimeMs,
-        description: seg.description,
-        transcriptPhrases: seg.transcriptPhrases || [],
-        fields: { description: { valueString: seg.description } },
-        startTime: seg.startTimeMs,
-        endTime: seg.endTimeMs
-      }));
-    } else if (
-      content.fields &&
-      (content.fields as any).Segments &&
-      Array.isArray((content.fields as any).Segments.valueArray)
-    ) {
-      // If fields.Segments.valueArray is present (array of objects with valueObject.Description.valueString)
-      segmentsRaw = ((content.fields as any).Segments.valueArray as any[]).map((item: any, index: number) => {
-        const desc = item.valueObject?.Description?.valueString || '';
-        // Try to extract timing from the original segments if available
-        const originalSeg = content.segments?.[index];
-        const startTimeMs = originalSeg?.startTimeMs ?? item.startTimeMs ?? 0;
-        const endTimeMs = originalSeg?.endTimeMs ?? item.endTimeMs ?? (startTimeMs + 5000); // fallback: 5s duration
-        const transcriptPhrases = originalSeg?.transcriptPhrases ?? item.transcriptPhrases ?? [];
-        
-        return {
-          startTimeMs,
-          endTimeMs,
-          description: desc,
-          transcriptPhrases,
-          fields: { description: { valueString: desc } },
-          startTime: startTimeMs,
-          endTime: endTimeMs
-        };
-      });
-    }
-  }
-  // Fallback: try to extract segments from other possible shapes
-  if (!segmentsRaw.length && (analyzerResult.result as any)?.segments && Array.isArray((analyzerResult.result as any).segments)) {
-    segmentsRaw = ((analyzerResult.result as any).segments as any[]).map((seg: any) => ({
-      startTimeMs: seg.startTimeMs ?? 0,
-      endTimeMs: seg.endTimeMs ?? (seg.startTimeMs + 5000),
-      description: seg.description ?? '',
-      transcriptPhrases: seg.transcriptPhrases || [],
-      fields: { description: { valueString: seg.description ?? '' } },
-      startTime: seg.startTimeMs ?? 0,
-      endTime: seg.endTimeMs ?? (seg.startTimeMs + 5000)
-    }));
-  }
-  // If no segments found, throw
-  if (!segmentsRaw.length) throw new Error('No segments found in analyzer result.');
-
-  // Validate that segments have timing information
-  const validSegments = segmentsRaw.filter(seg => 
-    typeof seg.startTimeMs === 'number' && 
-    typeof seg.endTimeMs === 'number' && 
-    seg.endTimeMs > seg.startTimeMs
-  );
-  
-  if (!validSegments.length) {
-    throw new Error('No segments with valid timing information found in analyzer result.');
-  }
-
-  // Call the rewriting/generation logic
-  return await getAudioDescriptionsFromAnalyzeResult(
-    validSegments,
-    title,
-    metadata,
-    narrationStyle,
-    languageCode
-  );
-};
-// --- Modular Audio Description Prompt System ---
-export const GLOBAL_SYSTEM_PROMPT: { [key: string]: string } = {
-    "en-US": `You are a certified Audio-Description Writer.\n• Target audience: blind & low-vision viewers.\n• Follow WCAG 2.2 + ACME Broadcaster AD style.\n• Use present tense, third-person, neutral tone.\n• Describe ONLY what the viewer cannot hear.\n• Read on-screen text EXACTLY verbatim.\n• Never reveal future plot or character motives.\n• Never exceed the word cap provided in payload.`,
-    "ar-SA": `أنت كاتب وصف صوتي معتمد.\n• الجمهور المستهدف: المكفوفون وضعاف البصر.\n• اتبع WCAG 2.2 + أسلوب البث الاحترافي.\n• استخدم زمن المضارع، ضمير الغائب، نبرة محايدة.\n• صف فقط ما لا يمكن للمشاهد سماعه.\n• اقرأ النص الظاهر على الشاشة حرفياً.\n• لا تكشف أحداث المستقبل أو دوافع الشخصيات.\n• لا تتجاوز الحد الأقصى للكلمات المحدد في الطلب.`,
-    "es-ES": `Eres un guionista de audiodescripción certificado.\n• Audiencia: personas ciegas o con baja visión.\n• Sigue WCAG 2.2 + estilo ACME Broadcaster.\n• Usa presente, tercera persona, tono neutral.\n• Describe SOLO lo que no se puede oír.\n• Lee el texto en pantalla EXACTAMENTE como aparece.\n• Nunca reveles futuros eventos o motivos.\n• Nunca superes el límite de palabras del payload.`,
-    "fr-FR": `Vous êtes un rédacteur d’audiodescription certifié.\n• Public cible : personnes aveugles ou malvoyantes.\n• Respectez WCAG 2.2 + style diffuseur professionnel.\n• Utilisez le présent, la troisième personne, un ton neutre.\n• Décrivez UNIQUEMENT ce que le spectateur n’entend pas.\n• Lisez le texte à l’écran EXACTEMENT tel quel.\n• Ne révélez jamais l’intrigue future ou les motifs.\n• Ne dépassez jamais le nombre de mots indiqué dans la requête.`
-} as const;
-
-const SEGMENT_CONTRACT = `Return **ONLY** valid JSON:\n{\n  "description": "<string, ≤{{maxWords}} words>",\n  "wordCount": <integer>\n}\n\nRules:\n1. wordCount MUST equal the number of words in description.\n2. If on-screen text exists, you MUST embed it verbatim, word-for-word, exactly as it appears, inside the flow.\n3. NEVER summarize, paraphrase, or alter on-screen text.\n4. NEVER hallucinate or invent any text that does not appear on screen.\n5. Do not repeat any previous segment’s visuals.\n6. Do not anticipate next segment.`;
-
 import axios from "axios";
 import { aiServicesResource, aiServicesKey, gptDeployment } from "../keys";
 import { delay, GenerateId, msToTime, timeToMs } from "./Helper";
@@ -255,26 +157,100 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
     // In-browser log collection
     const logLines: string[] = [];
 
-    // Parse segments and mark silence
-    const allSegmentsInTheVideo = result
-        .map((segment: Content, idx: number) => {
-            let description = "";
-            if (segment.fields && segment.fields.description && typeof segment.fields.description.valueString === "string") {
-                description = segment.fields.description.valueString;
+    // Extract segments and transcript phrases from the content
+    let segments: any[] = [];
+    let allTranscriptPhrases: any[] = [];
+    
+    if (result.length > 0) {
+        const content = result[0] as any;
+        // Get transcript phrases from content level
+        allTranscriptPhrases = content.transcriptPhrases || [];
+        
+        // Extract segments - try multiple possible locations
+        if (content.segments && Array.isArray(content.segments)) {
+            // Direct segments array is available - use it with descriptions from fields if available
+            segments = content.segments.map((seg: any, index: number) => {
+                let description = seg.description || '';
+                // Try to get description from fields.Segments.valueArray if available
+                if (content.fields?.Segments?.valueArray?.[index]?.valueObject?.Description?.valueString) {
+                    description = content.fields.Segments.valueArray[index].valueObject.Description.valueString;
+                }
+                return {
+                    startTimeMs: seg.startTimeMs,
+                    endTimeMs: seg.endTimeMs,
+                    description,
+                    segmentId: seg.segmentId || String(index + 1)
+                };
+            });
+        } else if (content.fields?.Segments?.valueArray) {
+            // Only fields.Segments.valueArray is available - create segments with fallback timing
+            segments = content.fields.Segments.valueArray.map((item: any, index: number) => ({
+                startTimeMs: index * 5000, // fallback timing
+                endTimeMs: (index + 1) * 5000,
+                description: item.valueObject?.Description?.valueString || '',
+                segmentId: String(index + 1)
+            }));
+        }
+    }
+    
+    if (segments.length === 0) {
+        throw new Error('No segments found in the content.');
+    }
+
+    // Helper function to check if a segment has overlapping speech
+    const getOverlappingTranscriptPhrases = (startMs: number, endMs: number) => {
+        return allTranscriptPhrases.filter((phrase: any) => {
+            const phraseStart = phrase.startTimeMs || 0;
+            const phraseEnd = phrase.endTimeMs || phraseStart;
+            // Check if there's any overlap between segment and transcript phrase
+            return phraseStart < endMs && phraseEnd > startMs;
+        });
+    };
+
+    // Helper function to get speech coverage percentage for a segment
+    const getSpeechCoveragePercentage = (startMs: number, endMs: number, overlappingPhrases: any[]) => {
+        if (overlappingPhrases.length === 0) return 0;
+        
+        let totalSpeechMs = 0;
+        const segmentDuration = endMs - startMs;
+        
+        for (const phrase of overlappingPhrases) {
+            const phraseStart = Math.max(phrase.startTimeMs || 0, startMs);
+            const phraseEnd = Math.min(phrase.endTimeMs || phrase.startTimeMs, endMs);
+            if (phraseEnd > phraseStart) {
+                totalSpeechMs += (phraseEnd - phraseStart);
             }
-            const isSilent = segment.transcriptPhrases.length === 0;
+        }
+        
+        return Math.min(100, (totalSpeechMs / segmentDuration) * 100);
+    };
+
+    // Parse segments and mark silence based on transcript phrase overlap
+    const allSegmentsInTheVideo = segments
+        .map((segment: any, idx: number) => {
+            const description = segment.description || "";
+            const overlappingPhrases = getOverlappingTranscriptPhrases(segment.startTimeMs, segment.endTimeMs);
+            const speechCoverage = getSpeechCoveragePercentage(segment.startTimeMs, segment.endTimeMs, overlappingPhrases);
+            // Consider a segment silent if less than 10% speech coverage
+            const isSilent = speechCoverage < 10;
             const durationMs = segment.endTimeMs - segment.startTimeMs;
+            
+            // Extract transcript text for logging
+            const transcriptTexts = overlappingPhrases.map(p => p.text || '').filter(t => t.length > 0);
+            
             logLines.push(
                 `SEGMENT ${idx + 1}: ${segment.startTimeMs}-${segment.endTimeMs} (${(durationMs / 1000).toFixed(3)}s) | ${isSilent ? 'SILENT' : 'SPEECH'}\n` +
-                `  Original: ${JSON.stringify(description).substring(0, 300)}\n` +
-                `  Transcript phrases: ${segment.transcriptPhrases.length}\n`
+                `  Speech coverage: ${speechCoverage.toFixed(1)}% (${overlappingPhrases.length} phrases)\n` +
+                `  Original: ${JSON.stringify(description).substring(0, 200)}\n` +
+                (transcriptTexts.length > 0 ? `  Transcript: ${JSON.stringify(transcriptTexts.join(' ')).substring(0, 200)}\n` : '')
             );
             return {
                 startTime: segment.startTimeMs,
                 endTime: segment.endTimeMs,
                 description,
                 isSilent,
-                transcriptPhraseCount: segment.transcriptPhrases.length,
+                transcriptPhraseCount: overlappingPhrases.length,
+                speechCoverage,
                 durationMs
             };
         })
@@ -284,6 +260,12 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
     // Identify silent and speech segments
     const silentSegments = allSegmentsInTheVideo.filter(s => s.isSilent);
     const speechSegments = allSegmentsInTheVideo.filter(s => !s.isSilent && s.description && s.description.trim().length > 0);
+
+    // Log segment distribution
+    logLines.push(`\n--- SEGMENT ANALYSIS ---\n`);
+    logLines.push(`Total segments: ${allSegmentsInTheVideo.length}\n`);
+    logLines.push(`Silent segments: ${silentSegments.length}\n`);
+    logLines.push(`Speech segments with descriptions: ${speechSegments.length}\n`);
 
     // Build silent intervals (never overlapping speech)
     const silentIntervals: Segment[] = [];
@@ -419,7 +401,7 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
         if (languageCode === 'ar-SA' || languageCode === 'ar-EG') {
             minWords = 12;
             maxWords = durationInSeconds > 7 ? 35 : 20;
-            wordCountTolerance = 4;
+            wordCountTolerance = 3; // Slightly tighter for Arabic
         }
         if (i < 3) {
             minWords = Math.max(minWords, 14);
@@ -439,8 +421,15 @@ export const getAudioDescriptionsFromAnalyzeResult = async (result: Content[], t
             nextDescription = mergedIntervals[i + 1].description || "";
         }
 
+        const additionalInstructions = {
+            "en-US": "\n\n[TEXT ACCURACY]: When any text appears on screen (titles, signs, documents, messages, captions, labels, or any visible writing), you MUST read it exactly, word-for-word, as it appears. Do NOT summarize, paraphrase, or alter the text in any way. Do NOT hallucinate or invent any text. However, ALSO describe the important visual elements, actions, people, and settings that cannot be heard.\n\n[SCENE CONTINUITY]: Ensure the description flows naturally from the previous context. Avoid repeating static details (lighting, architecture, etc.) or details already mentioned in the last 3 segments. Focus on what is new, changed, or important for the listener to follow the scene. Use linking phrases or transitions for better flow. If the interval is long, summarize the scene's progression.",
+            "ar-SA": "\n\n[دقة النصوص]: عندما يظهر أي نص على الشاشة (العناوين، اللافتات، الوثائق، الرسائل، التسميات التوضيحية، الملصقات، أو أي كتابة مرئية)، يجب عليك قراءته بالضبط، كلمة بكلمة، كما يظهر. لا تلخص أو تعيد صياغة أو تغير النص بأي شكل من الأشكال. لا تخترع أو تتخيل أي نص. ومع ذلك، اوصف أيضاً العناصر المرئية المهمة والأفعال والأشخاص والإعدادات التي لا يمكن سماعها.\n\n[استمرارية المشهد]: تأكد من أن الوصف ينساب بشكل طبيعي من السياق السابق. تجنب تكرار التفاصيل الثابتة (الإضاءة، الهندسة المعمارية، إلخ) أو التفاصيل المذكورة بالفعل في آخر 3 مقاطع. ركز على ما هو جديد أو متغير أو مهم للمستمع لمتابعة المشهد. استخدم عبارات الربط أو الانتقالات لتحسين التدفق. إذا كانت الفترة طويلة، لخص تطور المشهد.",
+            "es-ES": "\n\n[PRECISIÓN DEL TEXTO]: Cuando aparezca cualquier texto en pantalla (títulos, señales, documentos, mensajes, subtítulos, etiquetas, o cualquier escritura visible), DEBES leerlo exactamente, palabra por palabra, como aparece. NO resumas, parafrasees o alteres el texto de ninguna manera. NO alucines o inventes ningún texto. Sin embargo, TAMBIÉN describe los elementos visuales importantes, acciones, personas y escenarios que no se pueden escuchar.\n\n[CONTINUIDAD ESCÉNICA]: Asegúrate de que la descripción fluya naturalmente desde el contexto anterior. Evita repetir detalles estáticos (iluminación, arquitectura, etc.) o detalles ya mencionados en los últimos 3 segmentos. Enfócate en lo que es nuevo, cambiado o importante para que el oyente siga la escena. Usa frases de enlace o transiciones para mejor fluidez. Si el intervalo es largo, resume la progresión de la escena.",
+            "fr-FR": "\n\n[PRÉCISION DU TEXTE]: Lorsque du texte apparaît à l'écran (titres, panneaux, documents, messages, légendes, étiquettes, ou toute écriture visible), vous DEVEZ le lire exactement, mot pour mot, tel qu'il apparaît. NE résumez PAS, ne paraphrasez PAS ou n'altérez PAS le texte de quelque manière que ce soit. NE PAS halluciner ou inventer du texte. Cependant, décrivez AUSSI les éléments visuels importants, les actions, les personnes et les décors qui ne peuvent pas être entendus.\n\n[CONTINUITÉ SCÉNIQUE]: Assurez-vous que la description s'enchaîne naturellement depuis le contexte précédent. Évitez de répéter les détails statiques (éclairage, architecture, etc.) ou les détails déjà mentionnés dans les 3 derniers segments. Concentrez-vous sur ce qui est nouveau, changé ou important pour que l'auditeur suive la scène. Utilisez des phrases de liaison ou des transitions pour un meilleur flux. Si l'intervalle est long, résumez la progression de la scène."
+        };
+
         const globalSystem = (GLOBAL_SYSTEM_PROMPT[languageCode] || GLOBAL_SYSTEM_PROMPT["en-US"]) +
-            "\n\n[IMPORTANT]: If any text appears on screen (titles, signs, documents, messages, captions, labels, or any visible writing), you MUST read it exactly, word-for-word, as it appears. Do NOT summarize, paraphrase, or alter the text in any way. Do NOT hallucinate or invent any text. If there is no on-screen text, do not invent any.\n\n[SCENE CONTINUITY]: Ensure the description flows naturally from the previous context. Avoid repeating static details (lighting, architecture, etc.) or details already mentioned in the last 3 segments. Focus on what is new, changed, or important for the listener to follow the scene. Use linking phrases or transitions for better flow. If the interval is long, summarize the scene's progression.";
+            (additionalInstructions[languageCode as keyof typeof additionalInstructions] || additionalInstructions["en-US"]);
         const segmentContract = SEGMENT_CONTRACT.replace("{{maxWords}}", adjustedWordCount.toString());
         const prevContextArr = previousDescriptions.slice(-3);
         const payload = {
@@ -587,3 +576,148 @@ const getContentUnderstandingBaseUrl = (analyzerId: string, operation?: string) 
 const getAnalyzerResultsUrl = (taskId: string) => {
   return `https://${aiServicesResource}.cognitiveservices.azure.com/contentunderstanding/analyzerResults/${taskId}?api-version=2025-05-01-preview`;
 };
+
+export const getRewrittenSegmentsFromAnalyzerResult = async (
+  analyzerResult: ContentUnderstandingResults,
+  title: string,
+  metadata: string,
+  narrationStyle: string,
+  languageCode: string = 'en-US'
+) => {
+  // Defensive: find the first .contents[0].segments or .contents[0].fields?.Segments?.valueArray
+  let segmentsRaw: any[] = [];
+  if (analyzerResult?.result?.contents && analyzerResult.result.contents.length > 0) {
+    const content = analyzerResult.result.contents[0] as any;
+    
+    // Get transcript phrases from content level for speech detection
+    const allTranscriptPhrases = content.transcriptPhrases || [];
+    
+    // Helper function to check if a segment has overlapping speech
+    const getOverlappingTranscriptPhrases = (startMs: number, endMs: number) => {
+      return allTranscriptPhrases.filter((phrase: any) => {
+        const phraseStart = phrase.startTimeMs || 0;
+        const phraseEnd = phrase.endTimeMs || phraseStart;
+        // Check if there's any overlap between segment and transcript phrase
+        return phraseStart < endMs && phraseEnd > startMs;
+      });
+    };
+    
+    if (Array.isArray(content.segments)) {
+      // If segments is present (array of {startTimeMs, endTimeMs, description, ...})
+      segmentsRaw = content.segments.map((seg: any) => {
+        const overlappingPhrases = getOverlappingTranscriptPhrases(seg.startTimeMs, seg.endTimeMs);
+        return {
+          startTimeMs: seg.startTimeMs,
+          endTimeMs: seg.endTimeMs,
+          description: seg.description,
+          transcriptPhrases: overlappingPhrases,
+          fields: { description: { valueString: seg.description } },
+          startTime: seg.startTimeMs,
+          endTime: seg.endTimeMs
+        };
+      });
+    } else if (
+      content.fields &&
+      (content.fields as any).Segments &&
+      Array.isArray((content.fields as any).Segments.valueArray)
+    ) {
+      // If fields.Segments.valueArray is present (array of objects with valueObject.Description.valueString)
+      segmentsRaw = ((content.fields as any).Segments.valueArray as any[]).map((item: any, index: number) => {
+        const desc = item.valueObject?.Description?.valueString || '';
+        // Try to extract timing from the original segments if available
+        const originalSeg = content.segments?.[index];
+        const startTimeMs = originalSeg?.startTimeMs ?? item.startTimeMs ?? 0;
+        const endTimeMs = originalSeg?.endTimeMs ?? item.endTimeMs ?? (startTimeMs + 5000); // fallback: 5s duration
+        const overlappingPhrases = getOverlappingTranscriptPhrases(startTimeMs, endTimeMs);
+        
+        return {
+          startTimeMs,
+          endTimeMs,
+          description: desc,
+          transcriptPhrases: overlappingPhrases,
+          fields: { description: { valueString: desc } },
+          startTime: startTimeMs,
+          endTime: endTimeMs
+        };
+      });
+    }
+  }
+  // Fallback: try to extract segments from other possible shapes
+  if (!segmentsRaw.length && (analyzerResult.result as any)?.segments && Array.isArray((analyzerResult.result as any).segments)) {
+    const allTranscriptPhrases = (analyzerResult.result as any).transcriptPhrases || [];
+    const getOverlappingTranscriptPhrases = (startMs: number, endMs: number) => {
+      return allTranscriptPhrases.filter((phrase: any) => {
+        const phraseStart = phrase.startTimeMs || 0;
+        const phraseEnd = phrase.endTimeMs || phraseStart;
+        return phraseStart < endMs && phraseEnd > startMs;
+      });
+    };
+    
+    segmentsRaw = ((analyzerResult.result as any).segments as any[]).map((seg: any) => {
+      const overlappingPhrases = getOverlappingTranscriptPhrases(seg.startTimeMs ?? 0, seg.endTimeMs ?? (seg.startTimeMs + 5000));
+      return {
+        startTimeMs: seg.startTimeMs ?? 0,
+        endTimeMs: seg.endTimeMs ?? (seg.startTimeMs + 5000),
+        description: seg.description ?? '',
+        transcriptPhrases: overlappingPhrases,
+        fields: { description: { valueString: seg.description ?? '' } },
+        startTime: seg.startTimeMs ?? 0,
+        endTime: seg.endTimeMs ?? (seg.startTimeMs + 5000)
+      };
+    });
+  }
+  // If no segments found, throw
+  if (!segmentsRaw.length) throw new Error('No segments found in analyzer result.');
+
+  // Validate that segments have timing information and filter out invalid ones
+  const validSegments = segmentsRaw.filter(seg => 
+    typeof seg.startTimeMs === 'number' && 
+    typeof seg.endTimeMs === 'number' && 
+    seg.endTimeMs > seg.startTimeMs
+  );
+  
+  if (!validSegments.length) {
+    throw new Error('No segments with valid timing information found in analyzer result.');
+  }
+
+  // Create modified contents with only valid segments
+  const filteredContents = analyzerResult.result.contents.map((content: any) => ({
+    ...content,
+    segments: validSegments,
+    // Also update fields.Segments.valueArray if it exists
+    fields: content.fields?.Segments?.valueArray ? {
+      ...content.fields,
+      Segments: {
+        ...content.fields.Segments,
+        valueArray: validSegments.map((seg: any) => 
+          content.fields.Segments.valueArray[segmentsRaw.indexOf(seg)] || {
+            valueObject: {
+              Description: {
+                valueString: seg.description || ''
+              }
+            }
+          }
+        ).filter(Boolean)
+      }
+    } : content.fields
+  }));
+
+  // Call the rewriting/generation logic with filtered segments
+  return await getAudioDescriptionsFromAnalyzeResult(
+    filteredContents,
+    title,
+    metadata,
+    narrationStyle,
+    languageCode
+  );
+};
+// --- Modular Audio Description Prompt System ---
+export const GLOBAL_SYSTEM_PROMPT: { [key: string]: string } = {
+    "en-US": `You are a certified Audio-Description Writer.\n• Target audience: blind & low-vision viewers.\n• Follow WCAG 2.2 + ACME Broadcaster AD style.\n• Use present tense, third-person, neutral tone.\n• Describe ONLY what the viewer cannot hear.\n• Read on-screen text EXACTLY verbatim, word-for-word, character-for-character.\n• NEVER invent, assume, or hallucinate any text not visible on screen.\n• NEVER paraphrase or summarize written text - reproduce it exactly.\n• Never reveal future plot or character motives.\n• Never exceed the word cap provided in payload.`,
+    "ar-SA": `أنت كاتب وصف صوتي معتمد.\n• الجمهور المستهدف: المكفوفون وضعاف البصر.\n• اتبع WCAG 2.2 + أسلوب البث الاحترافي.\n• استخدم زمن المضارع، ضمير الغائب، نبرة محايدة.\n• صف فقط ما لا يمكن للمشاهد سماعه.\n• اقرأ النص الظاهر على الشاشة حرفياً، كلمة بكلمة، حرف بحرف.\n• لا تخترع أو تفترض أو تتخيل أي نص غير مرئي على الشاشة.\n• لا تعيد صياغة أو تلخص النص المكتوب - انقله بالضبط.\n• لا تكشف أحداث المستقبل أو دوافع الشخصيات.\n• لا تتجاوز الحد الأقصى للكلمات المحدد في الطلب.`,
+    "es-ES": `Eres un guionista de audiodescripción certificado.\n• Audiencia: personas ciegas o con baja visión.\n• Sigue WCAG 2.2 + estilo ACME Broadcaster.\n• Usa presente, tercera persona, tono neutral.\n• Describe SOLO lo que no se puede oír.\n• Lee el texto en pantalla EXACTAMENTE como aparece, palabra por palabra, carácter por carácter.\n• NUNCA inventes, asumas o alucines texto no visible en pantalla.\n• NUNCA parafrasees o resumas texto escrito - reprodúcelo exactamente.\n• Nunca reveles futuros eventos o motivos.\n• Nunca superes el límite de palabras del payload.`,
+    "fr-FR": `Vous êtes un rédacteur d’audiodescription certifié.\n• Public cible : personnes aveugles ou malvoyantes.\n• Respectez WCAG 2.2 + style diffuseur professionnel.\n• Utilisez le présent, la troisième personne, un ton neutre.\n• Décrivez UNIQUEMENT ce que le spectateur n’entend pas.\n• Lisez le texte à l’écran EXACTEMENT tel quel.\n• Ne révélez jamais l’intrigue future ou les motifs.\n• Ne dépassez jamais le nombre de mots indiqué dans la requête.`
+} as const;
+
+const SEGMENT_CONTRACT = `Return **ONLY** valid JSON:\n{\n  "description": "<string, ≤{{maxWords}} words>",\n  "wordCount": <integer>\n}\n\nRules:\n1. wordCount MUST equal the number of words in description.\n2. If on-screen text exists, you MUST embed it verbatim, word-for-word, exactly as it appears, inside the flow.\n3. NEVER summarize, paraphrase, or alter on-screen text.\n4. NEVER hallucinate or invent any text that does not appear on screen.\n5. Do not repeat any previous segment’s visuals.\n6. Do not anticipate next segment.`;
+
