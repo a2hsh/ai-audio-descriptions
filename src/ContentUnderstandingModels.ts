@@ -3,17 +3,36 @@ export interface TranscriptPhrase {
   startTimeMs: number;
   endTimeMs: number;
   text: string;
-  confidence: number;
+  confidence?: number;
   words: string[];
-  locale: string;
+  locale?: string;
+}
+
+export interface VideoSegment {
+  startTimeMs: number;
+  endTimeMs: number;
+  description: string;
+  segmentId: string;
 }
 
 export interface Content {
   markdown: string;
   fields: {
-    description: {
+    description?: {
       type: string;
       valueString: string;
+    };
+    Segments?: {
+      type: string;
+      valueArray: Array<{
+        type: string;
+        valueObject: {
+          Description: {
+            type: string;
+            valueString: string;
+          };
+        };
+      }>;
     };
   };
   kind: string;
@@ -22,7 +41,8 @@ export interface Content {
   width: number;
   height: number;
   transcriptPhrases: TranscriptPhrase[];
-  faces: any[];
+  segments?: VideoSegment[];
+  faces?: any[];
 }
 
 export interface Result {
