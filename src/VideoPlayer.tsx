@@ -448,6 +448,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = (props: VideoPlayerProps)
         setVideoUrl(taskInfo.videoUrl);
         setMetadata(taskInfo.metadata);
         setNarrationStyle(taskInfo.narrationStyle);
+        // Ensure the selected language from the upload dialog is used for immediate processing
+        setReprocessLanguage(props.selectedLanguage);
         setOpenUploadDialog(false);
         setVideoUploaded(true);
         setOpenProcessVideoDialog(true);
